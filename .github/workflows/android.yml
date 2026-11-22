@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Make a signed release with this version, like 0.2.0 (leave empty for a normal build)"
+        required: false
+        default: ""
 
 jobs:
   tdlib:
@@ -87,7 +92,7 @@ jobs:
 
   release:
     name: Signed release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_version != '')
     needs: tdlib
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -128,12 +133,19 @@ jobs:
           TELESTREAM_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           TELESTREAM_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           TELESTREAM_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
-          export TELESTREAM_VERSION_NAME="${GITHUB_REF_NAME#v}"
+          if [ -n "$RELEASE_VERSION" ]; then version="${RELEASE_VERSION#v}"; else version="${GITHUB_REF_NAME#v}"; fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          export TELESTREAM_VERSION_NAME="$version"
           ./gradlew --no-daemon :app:assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk "telestream-${GITHUB_REF_NAME}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "telestream-v${version}.apk"
 
+      # Creates the v<version> tag on this commit when started by hand.
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
+          name: Telestream ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
           files: telestream-*.apk
           generate_release_notes: true
