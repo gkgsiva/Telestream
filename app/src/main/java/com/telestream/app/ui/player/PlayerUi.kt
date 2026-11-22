@@ -13,6 +13,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material3.AlertDialog
+import com.telestream.app.player.Lyrics
+import com.telestream.app.player.LyricsFinder
+import com.telestream.app.player.SleepTimer
+import com.telestream.app.cast.CastManager
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Repeat
@@ -131,7 +137,14 @@ fun rememberNowPlaying(player: Player?): NowPlaying {
 /** Full-screen player for video (and for music, showing the standard controls). */
 @OptIn(UnstableApi::class)
 @Composable
-fun PlayerScreen(player: Player?, onClose: () -> Unit, onOpenInVlc: (() -> Unit)? = null) {
+fun PlayerScreen(
+    player: Player?,
+    onClose: () -> Unit,
+    onOpenInVlc: (() -> Unit)? = null,
+    current: AppMediaItem? = null,
+    onPlayOnTv: (() -> Unit)? = null,
+) {
+    var pickingCast by remember { mutableStateOf(false) }
     val context = LocalContext.current
     DisposableEffect(Unit) {
         val window = (context as? Activity)?.window
@@ -139,7 +152,11 @@ fun PlayerScreen(player: Player?, onClose: () -> Unit, onOpenInVlc: (() -> Unit)
         insets?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         insets?.hide(WindowInsetsCompat.Type.systemBars())
         window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Pip.canEnter = { player != null && player.isPlaying && player.mediaMetadata.mediaType == MediaMetadata.MEDIA_TYPE_VIDEO }
+        Pip.pause = { player?.pause() }
         onDispose {
+            Pip.canEnter = null
+            Pip.pause = null
             insets?.show(WindowInsetsCompat.Type.systemBars())
             window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             // Videos stop when the player is closed; music keeps playing in the background.
@@ -164,20 +181,93 @@ fun PlayerScreen(player: Player?, onClose: () -> Unit, onOpenInVlc: (() -> Unit)
                         requestFocus()
                     }
                 },
-                update = { it.player = player },
+                update = {
+                    it.player = player
+                    // No controls in the small floating window.
+                    it.useController = !Pip.active
+                    if (Pip.active) it.hideController()
+                },
                 onRelease = { it.player = null },
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        TextButton(onClick = onClose, modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
-            Text("Close", color = Color.White)
-        }
-        if (onOpenInVlc != null) {
-            TextButton(onClick = onOpenInVlc, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
-                Text("Open in VLC", color = Color.White)
+        if (!Pip.active) {
+            TextButton(onClick = onClose, modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
+                Text("Close", color = Color.White)
             }
+            Row(Modifier.align(Alignment.TopEnd).padding(8.dp)) {
+                if (onPlayOnTv != null) {
+                    TextButton(onClick = onPlayOnTv) { Text("Play on TV", color = Color.White) }
+                }
+                if (current != null && CastManager.available) {
+                    TextButton(onClick = { pickingCast = true }) { Text("Cast", color = Color.White) }
+                }
+                if (onOpenInVlc != null) {
+                    TextButton(onClick = onOpenInVlc) { Text("Open in VLC", color = Color.White) }
+                }
+            }
+            if (CastManager.casting) CastingOverlay(Modifier.align(Alignment.Center))
         }
     }
+    if (pickingCast && current != null) {
+        CastPicker(
+            onDismiss = { pickingCast = false },
+            onPick = { route ->
+                pickingCast = false
+                CastManager.castTo(route, current, player?.currentPosition ?: 0L, player)
+            },
+        )
+    }
+    CastManager.message?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { CastManager.message = null },
+            text = { Text(msg) },
+            confirmButton = { TextButton(onClick = { CastManager.message = null }) { Text("OK") } },
+        )
+    }
+}
+
+@Composable
+private fun CastingOverlay(modifier: Modifier) {
+    Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f), shape = MaterialTheme.shapes.large, modifier = modifier) {
+        Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Playing on ${CastManager.deviceName ?: "your TV"}", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 12.dp)) {
+                IconButton(onClick = { CastManager.castPlayer?.let { it.seekTo((it.currentPosition - 10_000).coerceAtLeast(0)) } }) {
+                    Icon(Icons.Default.SkipPrevious, contentDescription = "Back 10 seconds")
+                }
+                IconButton(onClick = { CastManager.castPlayer?.pause() }) { Icon(Icons.Default.Pause, contentDescription = "Pause") }
+                IconButton(onClick = { CastManager.castPlayer?.play() }) { Icon(Icons.Default.PlayArrow, contentDescription = "Play") }
+                IconButton(onClick = { CastManager.castPlayer?.let { it.seekTo(it.currentPosition + 30_000) } }) {
+                    Icon(Icons.Default.SkipNext, contentDescription = "Forward 30 seconds")
+                }
+            }
+            TextButton(onClick = CastManager::stopCasting) { Text("Stop casting") }
+        }
+    }
+}
+
+@Composable
+private fun CastPicker(onDismiss: () -> Unit, onPick: (androidx.mediarouter.media.MediaRouter.RouteInfo) -> Unit) {
+    DisposableEffect(Unit) {
+        CastManager.startDiscovery()
+        onDispose { CastManager.stopDiscovery() }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Cast to") },
+        text = {
+            Column {
+                if (CastManager.routes.isEmpty()) {
+                    Text("Looking for Chromecast and Google TV devices on this Wi-Fi…")
+                }
+                CastManager.routes.forEach { route ->
+                    TextButton(onClick = { onPick(route) }) { Text(route.name) }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** Bar at the bottom of the app while music plays: title, previous, play/pause, next. */
@@ -231,6 +321,7 @@ fun NowPlayingScreen(player: Player?, state: NowPlaying, art: AppMediaItem?, onC
             delay(500)
         }
     }
+    var showLyrics by remember { mutableStateOf(false) }
     val playFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { playFocus.requestFocus() } }
 
@@ -321,6 +412,10 @@ fun NowPlayingScreen(player: Player?, state: NowPlaying, art: AppMediaItem?, onC
                 }
             }
         }
+        item { SleepAndLyricsRow(player, state, showLyrics) { showLyrics = !showLyrics } }
+        if (showLyrics) {
+            item { LyricsPanel(state.title, state.artist, duration, position) }
+        }
         item {
             Text(
                 "Queue · ${state.queue.size}",
@@ -377,6 +472,91 @@ private fun CoverArt(item: AppMediaItem?, modifier: Modifier) {
             TdImage(item.thumbFileId, item.minithumbnail, Modifier.fillMaxSize())
         } else {
             Icon(Icons.Default.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.fillMaxSize(0.5f))
+        }
+    }
+}
+
+@Composable
+private fun SleepAndLyricsRow(player: Player, state: NowPlaying, showLyrics: Boolean, onToggleLyrics: () -> Unit) {
+    var choosing by remember { mutableStateOf(false) }
+    val endsAt = SleepTimer.endsAt
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(endsAt) {
+        while (endsAt != null) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+        TextButton(onClick = { choosing = true }) {
+            Icon(Icons.Default.Bedtime, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text(if (endsAt == null) "Sleep timer" else "Sleep in " + formatMs((endsAt - now).coerceAtLeast(0)))
+        }
+        TextButton(onClick = onToggleLyrics) {
+            Icon(Icons.Default.MusicNote, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text(if (showLyrics) "Hide lyrics" else "Lyrics")
+        }
+    }
+    if (choosing) {
+        AlertDialog(
+            onDismissRequest = { choosing = false },
+            title = { Text("Stop playing after") },
+            text = {
+                Column {
+                    listOf(15, 30, 45, 60, 90).forEach { minutes ->
+                        TextButton(onClick = { SleepTimer.start(player, minutes * 60_000L); choosing = false }) { Text("$minutes minutes") }
+                    }
+                    TextButton(onClick = { SleepTimer.endOfTrack(player); choosing = false }) { Text("End of this song") }
+                    if (endsAt != null) {
+                        TextButton(onClick = { SleepTimer.cancel(); choosing = false }) { Text("Turn off timer") }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { choosing = false }) { Text("Close") } },
+        )
+    }
+}
+
+@Composable
+private fun LyricsPanel(title: String, artist: String, durationMs: Long, positionMs: Long) {
+    var lyrics by remember(title, artist) { mutableStateOf<Lyrics?>(null) }
+    var loading by remember(title, artist) { mutableStateOf(true) }
+    LaunchedEffect(title, artist) {
+        loading = true
+        lyrics = LyricsFinder.find(title, artist, durationMs)
+        loading = false
+    }
+    Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            val found = lyrics
+            when {
+                loading -> Text("Looking for lyrics…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                found == null -> Text("No lyrics found for this song.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                found.synced.isNotEmpty() -> {
+                    // Show the current line and a few around it, highlighted as the song plays.
+                    val current = found.synced.indexOfLast { it.timeMs <= positionMs }.coerceAtLeast(0)
+                    val from = (current - 3).coerceAtLeast(0)
+                    val to = (current + 6).coerceAtMost(found.synced.size)
+                    for (i in from until to) {
+                        val line = found.synced[i]
+                        Text(
+                            line.text.ifBlank { "♪" },
+                            style = if (i == current) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+                            color = if (i == current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 2.dp),
+                        )
+                    }
+                }
+                else -> Text(found.plain, style = MaterialTheme.typography.bodyLarge)
+            }
+            Text(
+                "Lyrics from LRCLIB",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
         }
     }
 }

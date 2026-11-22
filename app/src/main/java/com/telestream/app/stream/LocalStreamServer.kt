@@ -33,6 +33,10 @@ class LocalStreamServer(private val td: TdClient) {
     @Volatile
     private var socket: ServerSocket? = null
 
+    /** Second socket on all interfaces, only opened for casting to a TV on the same Wi-Fi. */
+    @Volatile
+    private var lanSocket: ServerSocket? = null
+
     private val active = AtomicInteger(0)
 
     @Volatile
@@ -44,15 +48,38 @@ class LocalStreamServer(private val td: TdClient) {
     /** Starts the server if needed and returns the URL for [fileId]. */
     @Synchronized
     fun urlFor(fileId: Int, fileName: String): Uri {
-        val server = socket ?: start()
+        val server = socket ?: start(InetAddress.getByName("127.0.0.1")).also { socket = it }
         lastActivity = System.currentTimeMillis()
         val name = Uri.encode(fileName.ifBlank { "video" })
         return Uri.parse("http://127.0.0.1:${server.localPort}/$token/$fileId/$name")
     }
 
-    private fun start(): ServerSocket {
-        val server = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
-        socket = server
+    /** URL that other devices on the same network (a Chromecast) can open; null without Wi-Fi. */
+    @Synchronized
+    fun lanUrlFor(fileId: Int, fileName: String): Uri? {
+        val ip = lanAddress() ?: return null
+        val server = lanSocket ?: start(null).also { lanSocket = it }
+        lastActivity = System.currentTimeMillis()
+        val name = Uri.encode(fileName.ifBlank { "video" })
+        return Uri.parse("http://$ip:${server.localPort}/$token/$fileId/$name")
+    }
+
+    @Synchronized
+    fun stopLan() {
+        runCatching { lanSocket?.close() }
+        lanSocket = null
+    }
+
+    private fun lanAddress(): String? = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.toList() }
+            .firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }
+            ?.hostAddress
+    }.getOrNull()
+
+    private fun start(address: InetAddress?): ServerSocket {
+        val server = if (address == null) ServerSocket(0, 16) else ServerSocket(0, 16, address)
         Thread({
             while (!server.isClosed) {
                 val client = try {
@@ -70,6 +97,7 @@ class LocalStreamServer(private val td: TdClient) {
     fun stop() {
         runCatching { socket?.close() }
         socket = null
+        stopLan()
     }
 
     private fun handle(client: Socket) {

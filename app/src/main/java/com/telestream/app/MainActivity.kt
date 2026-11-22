@@ -34,6 +34,11 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.telestream.app.stream.ExternalPlayer
 import com.telestream.app.ui.settings.SettingsScreen
+import com.telestream.app.ui.player.Pip
+import com.telestream.app.cast.CastManager
+import com.telestream.app.remote.RemoteClient
+import com.telestream.app.remote.RemoteServer
+import com.telestream.app.ui.remote.RemoteScreen
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
 import com.telestream.app.player.Playback
@@ -78,6 +83,11 @@ class MainActivity : ComponentActivity() {
         }
 
         handleIntent(intent)
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)) {
+            RemoteServer.start(this)
+        } else {
+            CastManager.init(this)
+        }
 
         setContent {
             TelestreamTheme {
@@ -85,6 +95,28 @@ class MainActivity : ComponentActivity() {
                     AppRoot(app, playback)
                 }
             }
+        }
+    }
+
+    /** Leaving the app while a video plays shrinks it to a floating window (phones only). */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val isTv = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+        if (Build.VERSION.SDK_INT >= 26 && !isTv && Pip.canEnter?.invoke() == true) {
+            runCatching {
+                enterPictureInPictureMode(
+                    android.app.PictureInPictureParams.Builder().setAspectRatio(android.util.Rational(16, 9)).build(),
+                )
+            }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        Pip.active = isInPictureInPictureMode
+        // Closing the floating window stops the activity without bringing it back: pause the video.
+        if (!isInPictureInPictureMode && !lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) {
+            Pip.pause?.invoke()
         }
     }
 
@@ -187,6 +219,21 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
 
     LaunchedEffect(Unit) { app.sync.requestSync() }
 
+    // A phone remote asked this TV to play something.
+    val remotePlay = RemoteServer.playRequest.value
+    LaunchedEffect(remotePlay) {
+        val request = remotePlay ?: return@LaunchedEffect
+        RemoteServer.playRequest.value = null
+        val item = runCatching { app.repository.loadMessageMedia(request.chatId, request.messageId) }.getOrNull()
+        if (item == null) {
+            Toast.makeText(context, "This TV can't open that video. Is it logged in to the same account?", Toast.LENGTH_LONG).show()
+        } else {
+            playback.playQueue(listOf(item), 0)
+            if (request.positionMs > 0) playback.controller().seekTo(request.positionMs)
+            nav.navigate(if (item.kind == MediaKind.VIDEO) "player" else "nowplaying")
+        }
+    }
+
     val openChat = MainActivity.openChatRequest.value
     LaunchedEffect(openChat) {
         if (openChat != null) {
@@ -277,6 +324,19 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                     val current = playback.itemFor(nowPlaying.mediaId)
                     PlayerScreen(
                         player,
+                        current = current,
+                        onPlayOnTv = if (RemoteClient.connected != null && current != null) {
+                            {
+                                val position = player?.currentPosition ?: 0L
+                                player?.pause()
+                                scope.launch {
+                                    val ok = RemoteClient.playOnTv(current.chatId, current.messageId, position) != null
+                                    Toast.makeText(context, if (ok) "Playing on your TV" else "Could not reach the TV", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        } else {
+                            null
+                        },
                         onClose = { nav.popBackStack() },
                         onOpenInVlc = current?.let { item ->
                             {
@@ -288,7 +348,14 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                     )
                 }
                 composable("settings") {
-                    SettingsScreen(onBack = { nav.popBackStack() }, beforeSwitchAccount = { player?.stop() })
+                    SettingsScreen(
+                        onBack = { nav.popBackStack() },
+                        beforeSwitchAccount = { player?.stop() },
+                        onOpenRemote = { nav.navigate("remote") },
+                    )
+                }
+                composable("remote") {
+                    RemoteScreen(onBack = { nav.popBackStack() })
                 }
                 composable("nowplaying") {
                     NowPlayingScreen(player, nowPlaying, playback.itemFor(nowPlaying.mediaId), onClose = { nav.popBackStack() })

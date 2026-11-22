@@ -35,6 +35,25 @@ part you are watching. There is no server.
 - **Open in VLC:** the button at the top right of the video player hands the stream to the VLC app,
   starting where you were. Telestream serves the file from Telegram over a private local address
   while VLC plays, so nothing is downloaded first. Without VLC you can pick another player.
+- **Cast:** the Cast button in the video player sends the video to a Chromecast or Google TV on
+  the same Wi-Fi (Google's default receiver, so MP4/WebM work best; the phone streams it).
+- **Phone as TV remote:** on the TV, Settings, then Phone remote shows a 4-digit code. On the phone,
+  Settings, then Find my TV, pick the TV and enter the code. Then use play/pause/skip, or tap
+  "Play on TV" in the phone's player to move the video to the TV.
+- **Parental lock:** set a PIN in Settings, then lock chats under My chats, then Hide or lock.
+  Locked chats leave chats, search and Continue watching until the lock icon at the top is unlocked.
+- **New-upload notifications:** tap the bell on a channel page. Telestream checks about every 15 minutes.
+- **Search filters and history:** filter results by size, length, quality (720p/1080p/4K) and date;
+  remove single history entries or clear them all.
+- **Duplicates:** the same file reposted in several chats shows once (Settings or the filter panel to turn off).
+- **Picture-in-picture:** on phones, leaving the app while a video plays keeps it in a floating window.
+- **Sleep timer and lyrics:** on Now playing, stop music after 15 to 90 minutes or at the end of the
+  song, and show lyrics (synced when available) from [LRCLIB](https://lrclib.net).
+- **Android Auto:** your lists with music appear in Android Auto.
+- **Several accounts:** Settings, then Add another account; switch between them there.
+- **Info and updates:** Settings, then Info shows the version and has Check for update, which
+  downloads the newest signed APK from GitHub Releases and opens the installer. This needs the
+  releases to be reachable without a login (a public repository).
 - **Voice search:** the mic in the search field, or "Search by voice" on Android TV.
 - **Sync between phone and TV:** lists, hidden chats and Continue watching are kept in a
   `telestream-sync.json` file in your Telegram Saved Messages. Log in with the same account on both

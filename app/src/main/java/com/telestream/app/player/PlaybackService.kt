@@ -11,10 +11,16 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.common.MediaMetadata
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaLibraryService.LibraryParams
+import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
-import com.google.common.util.concurrent.Futures
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.guava.future
 import com.telestream.app.MainActivity
 import com.telestream.app.TelestreamApp
 import com.telestream.app.telegram.MediaKind
@@ -31,8 +37,8 @@ import kotlinx.coroutines.launch
  * shows media controls in the notification and on the lock screen.
  */
 @OptIn(UnstableApi::class)
-class PlaybackService : MediaSessionService() {
-    private var session: MediaSession? = null
+class PlaybackService : MediaLibraryService() {
+    private var session: MediaLibrarySession? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -57,14 +63,15 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         player.addListener(ResumeTracker(player, app))
+        // So the phone remote and casting can find the player without a controller.
+        current = player
 
         val openApp = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        session = MediaSession.Builder(this, player)
-            .setCallback(Callback())
+        session = MediaLibrarySession.Builder(this, player, Callback(app))
             .setSessionActivity(openApp)
             .build()
 
@@ -78,7 +85,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = session?.player
@@ -86,6 +93,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        current = null
         scope.cancel()
         session?.run {
             player.release()
@@ -95,20 +103,118 @@ class PlaybackService : MediaSessionService() {
         super.onDestroy()
     }
 
-    private inner class Callback : MediaSession.Callback {
-        // Media items arriving from a controller may lose their local Uri on the way, so we
-        // carry it in requestMetadata.mediaUri and restore it here.
+    /**
+     * Serves the player to the app and to Android Auto. Auto browses the user's lists and plays
+     * the music in them; items it picks arrive with only a media id, which is resolved here.
+     */
+    private inner class Callback(private val app: TelestreamApp) : MediaLibrarySession.Callback {
+        override fun onGetLibraryRoot(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<MediaItem>> =
+            com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(folder(ROOT, "Telestream"), params))
+
+        override fun onGetChildren(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = scope.future {
+            val lists = app.settings.lists.first()
+            val children: List<MediaItem> = if (parentId == ROOT) {
+                lists.filter { list -> list.items.any { it.kind == MediaKind.AUDIO } }.map { folder(LIST_PREFIX + it.id, it.name) }
+            } else if (parentId.startsWith(LIST_PREFIX)) {
+                val listId = parentId.removePrefix(LIST_PREFIX)
+                lists.firstOrNull { it.id == listId }?.items.orEmpty()
+                    .filter { it.kind == MediaKind.AUDIO }
+                    .map { item ->
+                        MediaItem.Builder()
+                            .setMediaId("$LIST_PREFIX$listId/${item.id}")
+                            .setMediaMetadata(
+                                MediaMetadata.Builder()
+                                    .setTitle(item.title)
+                                    .setArtist(item.subtitle.ifBlank { item.chatTitle })
+                                    .setIsBrowsable(false)
+                                    .setIsPlayable(true)
+                                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                                    .build(),
+                            )
+                            .build()
+                    }
+            } else {
+                emptyList()
+            }
+            val from = (page * pageSize).coerceAtMost(children.size)
+            val to = (from + pageSize).coerceAtMost(children.size)
+            LibraryResult.ofItemList(ImmutableList.copyOf(children.subList(from, to)), params)
+        }
+
         override fun onAddMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
             mediaItems: MutableList<MediaItem>,
-        ): ListenableFuture<MutableList<MediaItem>> {
-            val resolved = mediaItems.map { item ->
-                val uri = item.requestMetadata.mediaUri ?: item.localConfiguration?.uri
-                if (uri == null) item else item.buildUpon().setUri(uri).build()
+        ): ListenableFuture<MutableList<MediaItem>> = scope.future { resolveAll(mediaItems).toMutableList() }
+
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = scope.future {
+            val single = mediaItems.singleOrNull()
+            if (single != null && single.mediaId.startsWith(LIST_PREFIX) && single.requestMetadata.mediaUri == null) {
+                // A song picked in Android Auto: queue the whole list from that song.
+                val listId = single.mediaId.removePrefix(LIST_PREFIX).substringBefore('/')
+                val itemId = single.mediaId.substringAfter('/')
+                val saved = app.settings.lists.first().firstOrNull { it.id == listId }?.items.orEmpty()
+                    .filter { it.kind == MediaKind.AUDIO }
+                val loaded = saved.mapNotNull { s ->
+                    runCatching { app.repository.loadMessageMedia(s.chatId, s.messageId) }.getOrNull()?.let { s.id to it.toMedia3() }
+                }
+                val start = loaded.indexOfFirst { it.first == itemId }.coerceAtLeast(0)
+                MediaSession.MediaItemsWithStartPosition(loaded.map { it.second }, start, 0L)
+            } else {
+                val resolved = resolveAll(mediaItems)
+                MediaSession.MediaItemsWithStartPosition(resolved, startIndex.coerceIn(0, (resolved.size - 1).coerceAtLeast(0)), startPositionMs)
             }
-            return Futures.immediateFuture(resolved.toMutableList())
         }
+
+        // Items from the app carry their Uri in requestMetadata.mediaUri, since the local Uri can
+        // be lost on the way. Items with only an id ("chatId:messageId") are loaded from Telegram.
+        private suspend fun resolveAll(items: List<MediaItem>): List<MediaItem> = items.mapNotNull { item ->
+            val uri = item.requestMetadata.mediaUri ?: item.localConfiguration?.uri
+            if (uri != null) return@mapNotNull item.buildUpon().setUri(uri).build()
+            val id = item.mediaId.substringAfterLast('/')
+            val chatId = id.substringBefore(':').toLongOrNull() ?: return@mapNotNull null
+            val messageId = id.substringAfter(':').toLongOrNull() ?: return@mapNotNull null
+            runCatching { app.repository.loadMessageMedia(chatId, messageId) }.getOrNull()?.toMedia3()
+        }
+
+        private fun folder(id: String, title: String) = MediaItem.Builder()
+            .setMediaId(id)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(title)
+                    .setIsBrowsable(true)
+                    .setIsPlayable(false)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
+                    .build(),
+            )
+            .build()
+    }
+
+    companion object {
+        private const val ROOT = "root"
+        private const val LIST_PREFIX = "list:"
+
+        /** The live player while the service runs. Main thread only. */
+        @Volatile
+        var current: Player? = null
+            private set
     }
 
     private fun saveProgress(app: TelestreamApp, item: MediaItem?, positionMs: Long, durationMs: Long) {

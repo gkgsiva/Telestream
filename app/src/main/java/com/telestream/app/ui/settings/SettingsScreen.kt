@@ -42,6 +42,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.telestream.app.TelestreamApp
 import com.telestream.app.data.ParentalLock
 import com.telestream.app.ui.common.LocalIsTv
+import com.telestream.app.update.Release
+import com.telestream.app.update.UpdateChecker
+import android.os.Build
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
 
 /** Lock icon in the header: unlocks locked chats with the PIN, or locks them again. */
@@ -103,7 +107,7 @@ fun PinDialog(title: String, error: String?, onDismiss: () -> Unit, onPin: (Stri
 private enum class PinStep { NONE, VERIFY_TO_CHANGE, VERIFY_TO_REMOVE, NEW }
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit, beforeSwitchAccount: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, beforeSwitchAccount: () -> Unit, onOpenRemote: () -> Unit) {
     val app = TelestreamApp.instance
     val scope = rememberCoroutineScope()
     val isTv = LocalIsTv.current
@@ -185,6 +189,15 @@ fun SettingsScreen(onBack: () -> Unit, beforeSwitchAccount: () -> Unit) {
                 )
             }
 
+            item { Section(if (isTv) "Phone remote" else "Control your TV") }
+            item {
+                Hint(
+                    if (isTv) "Control this TV from Telestream on your phone. Open this page to see the pairing code."
+                    else "Use this phone as a remote for Telestream on your TV, or send the video you are watching to it.",
+                )
+            }
+            item { OutlinedButton(onClick = onOpenRemote) { Text(if (isTv) "Show pairing code" else "Find my TV") } }
+
             item { Section("Search") }
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -192,6 +205,8 @@ fun SettingsScreen(onBack: () -> Unit, beforeSwitchAccount: () -> Unit) {
                     Switch(checked = hideDuplicates, onCheckedChange = { scope.launch { app.settings.setHideDuplicates(it) } })
                 }
             }
+            item { Section("Info") }
+            item { AboutSection() }
             item { Spacer(Modifier.padding(16.dp)) }
         }
     }
@@ -240,4 +255,94 @@ private fun Section(title: String) {
 @Composable
 private fun Hint(text: String) {
     Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun AboutSection() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val version = remember { UpdateChecker.installedVersion(context) }
+    val build = remember { UpdateChecker.installedBuild(context) }
+    var checking by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var release by remember { mutableStateOf<Release?>(null) }
+    var progress by remember { mutableStateOf<Float?>(null) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        InfoLine("Version", "$version (build $build)")
+        InfoLine("Device", "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}")
+        InfoLine("Processor", Build.SUPPORTED_ABIS.firstOrNull().orEmpty())
+        Hint("Telestream plays videos and music from your own Telegram chats. It has no server: your login and API keys stay on this device.")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(enabled = !checking && progress == null, onClick = {
+                checking = true
+                status = null
+                release = null
+                scope.launch {
+                    try {
+                        val latest = UpdateChecker.latest()
+                        if (UpdateChecker.isNewer(latest.version, version)) {
+                            release = latest
+                            status = "Version ${latest.version} is available."
+                        } else {
+                            status = "You have the latest version."
+                        }
+                    } catch (e: Exception) {
+                        status = e.message ?: "Could not check for updates."
+                    } finally {
+                        checking = false
+                    }
+                }
+            }) { Text(if (checking) "Checking…" else "Check for update") }
+            OutlinedButton(onClick = {
+                runCatching {
+                    context.startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(UpdateChecker.RELEASES_PAGE))
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }) { Text("Releases page") }
+        }
+        status?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+        release?.let { r ->
+            if (r.notes.isNotBlank()) Hint(r.notes.take(600))
+            val url = r.apkUrl
+            if (url == null) {
+                Hint("This release has no APK attached yet.")
+            } else if (progress != null) {
+                androidx.compose.material3.LinearProgressIndicator(progress = { progress ?: 0f }, modifier = Modifier.fillMaxWidth())
+            } else {
+                androidx.compose.material3.Button(onClick = {
+                    if (!UpdateChecker.canInstall(context)) {
+                        status = "Allow Telestream to install apps, then tap Download and install again."
+                        UpdateChecker.openInstallPermission(context)
+                    } else scope.launch {
+                        progress = 0f
+                        try {
+                            val file = UpdateChecker.download(context, url) { p -> progress = p }
+                            UpdateChecker.install(context, file)
+                            status = "If Android says the app conflicts, uninstall this test build first, then install the update."
+                        } catch (e: Exception) {
+                            status = e.message ?: "Download failed."
+                        } finally {
+                            progress = null
+                        }
+                    }
+                }) { Text("Download and install") }
+            }
+        }
+        Section("Open source")
+        Hint(
+            "TDLib (Boost Software License 1.0), AndroidX and Media3 (Apache 2.0), FFmpeg decoders via Jellyfin media3-ffmpeg-decoder (LGPL), " +
+                "Coil (Apache 2.0), ZXing (Apache 2.0). Lyrics come from LRCLIB.",
+        )
+    }
+}
+
+@Composable
+private fun InfoLine(label: String, value: String) {
+    Row {
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 12.dp))
+        Text(value)
+    }
 }
