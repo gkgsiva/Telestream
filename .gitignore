@@ -1,0 +1,19 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# TDLib is built from source by scripts/build-tdlib.sh (or downloaded from CI)
+/tdlib/src/main/java/org/
+/tdlib/src/main/jniLibs/
+/tdlib-out/
+/.tdlib-build/
