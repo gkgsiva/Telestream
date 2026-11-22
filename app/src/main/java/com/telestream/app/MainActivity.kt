@@ -3,6 +3,7 @@ package com.telestream.app
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -32,6 +33,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.telestream.app.stream.ExternalPlayer
+import com.telestream.app.ui.settings.SettingsScreen
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import com.telestream.app.player.Playback
 import com.telestream.app.telegram.MediaItem
 import com.telestream.app.telegram.MediaKind
@@ -73,6 +77,8 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
 
+        handleIntent(intent)
+
         setContent {
             TelestreamTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -80,6 +86,23 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val chatId = intent?.getLongExtra(EXTRA_OPEN_CHAT, 0L) ?: 0L
+        if (chatId != 0L) openChatRequest.value = chatId
+    }
+
+    companion object {
+        const val EXTRA_OPEN_CHAT = "open_chat"
+
+        /** A chat to open, from a new-upload notification. */
+        val openChatRequest = androidx.compose.runtime.mutableStateOf<Long?>(null)
     }
 
     override fun onStart() {
@@ -127,6 +150,17 @@ private fun AppRoot(app: TelestreamApp, playback: Playback) {
 
             else -> Box(Modifier.safeDrawingPadding()) {
                 LoginScreen(app.td, state!!, authError, preferPhone) { preferPhone = it }
+                // While adding an account, offer a way back to the ones already logged in.
+                val accounts by app.settings.accounts.collectAsStateWithLifecycle(initialValue = emptyList())
+                val currentAccount by app.settings.currentAccount.collectAsStateWithLifecycle(initialValue = 0)
+                val other = accounts.firstOrNull { it.index != currentAccount }
+                if (other != null && accounts.none { it.index == currentAccount }) {
+                    val switchScope = rememberCoroutineScope()
+                    androidx.compose.material3.TextButton(
+                        onClick = { switchScope.launch { app.td.switchAccount(other.index) } },
+                        modifier = Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(8.dp),
+                    ) { androidx.compose.material3.Text("Back to ${other.name}") }
+                }
                 if (authError?.contains("API ID", ignoreCase = true) == true) {
                     val scope = rememberCoroutineScope()
                     androidx.compose.material3.TextButton(
@@ -152,6 +186,14 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
     var addToList by remember { mutableStateOf<MediaItem?>(null) }
 
     LaunchedEffect(Unit) { app.sync.requestSync() }
+
+    val openChat = MainActivity.openChatRequest.value
+    LaunchedEffect(openChat) {
+        if (openChat != null) {
+            MainActivity.openChatRequest.value = null
+            nav.navigate("chat/$openChat")
+        }
+    }
 
     val download: (MediaItem) -> Unit = { item ->
         scope.launch {
@@ -210,7 +252,8 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                         onPlay = play,
                         onAddToList = { addToList = it },
                         onDownload = download,
-                        onLogOut = { scope.launch { player?.stop(); app.td.logOut() } },
+                        onLogOut = { scope.launch { player?.stop(); app.td.logOutAndSwitch() } },
+                        onOpenSettings = { nav.navigate("settings") },
                     )
                 }
                 composable("chat/{chatId}", arguments = listOf(navArgument("chatId") { type = NavType.LongType })) { entry ->
@@ -243,6 +286,9 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                             }
                         },
                     )
+                }
+                composable("settings") {
+                    SettingsScreen(onBack = { nav.popBackStack() }, beforeSwitchAccount = { player?.stop() })
                 }
                 composable("nowplaying") {
                     NowPlayingScreen(player, nowPlaying, playback.itemFor(nowPlaying.mediaId), onClose = { nav.popBackStack() })

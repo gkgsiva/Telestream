@@ -47,6 +47,18 @@ import com.telestream.app.ui.common.LocalIsTv
 import com.telestream.app.ui.common.MediaRow
 import com.telestream.app.ui.common.SmallLoading
 import com.telestream.app.ui.common.TdImage
+import com.telestream.app.data.ParentalLock
+import com.telestream.app.notify.NewUploadsWorker
+import com.telestream.app.ui.settings.UnlockDialog
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsNone
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 
 @Composable
 fun ChatScreen(
@@ -61,6 +73,17 @@ fun ChatScreen(
     val keyboard = LocalSoftwareKeyboardController.current
     val isTv = LocalIsTv.current
     val side = if (isTv) 48.dp else 12.dp
+    val locked by app.settings.lockedChats.collectAsStateWithLifecycle(initialValue = emptySet())
+    val followed by app.settings.followedChats.collectAsStateWithLifecycle(initialValue = emptySet())
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    if (chatId in ParentalLock.hiddenSet(locked)) {
+        var asking by remember { mutableStateOf(false) }
+        CenteredMessage("This chat is locked with the parental PIN.", actionLabel = "Enter PIN", onAction = { asking = true })
+        if (asking) UnlockDialog(onDismiss = { asking = false }, onUnlocked = { asking = false; ParentalLock.unlocked = true })
+        return
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = side - 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -75,6 +98,22 @@ fun ChatScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(start = 12.dp).weight(1f),
                 )
+                val isFollowed = chatId in followed
+                IconButton(onClick = {
+                    scope.launch {
+                        app.settings.setChatFollowed(chatId, !isFollowed)
+                        if (!isFollowed) {
+                            // 0 tells the worker to start from the newest message, so only later uploads notify.
+                            app.settings.setLastSeenMessage(chatId, 0L)
+                            NewUploadsWorker.schedule(context)
+                        }
+                    }
+                }) {
+                    Icon(
+                        if (isFollowed) Icons.Default.NotificationsActive else Icons.Default.NotificationsNone,
+                        contentDescription = if (isFollowed) "Stop new-upload notifications" else "Notify me of new uploads",
+                    )
+                }
                 if (vm.isMember == false) {
                     Button(onClick = vm::join, enabled = !vm.joining, modifier = Modifier.padding(start = 8.dp)) { Text("Join") }
                 }

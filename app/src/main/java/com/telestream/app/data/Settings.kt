@@ -1,6 +1,7 @@
 package com.telestream.app.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
@@ -25,7 +26,15 @@ class Settings(private val context: Context) {
     private val hiddenChatsKey = stringSetPreferencesKey("hidden_chats")
     private val listsKey = stringPreferencesKey("user_lists")
     private val resumeKey = stringPreferencesKey("continue_watching")
-    private val downloadsKey = stringPreferencesKey("downloads")
+    private val lockedChatsKey = stringSetPreferencesKey("locked_chats")
+    private val pinHashKey = stringPreferencesKey("parental_pin")
+    private val followedChatsKey = stringSetPreferencesKey("followed_chats")
+    private val accountKey = intPreferencesKey("account")
+    private val accountsKey = stringPreferencesKey("accounts")
+    private val hideDuplicatesKey = booleanPreferencesKey("hide_duplicates")
+
+    /** Downloads live in each account's own TDLib files folder, so each account has its own list. */
+    private fun downloadsKey(account: Int) = stringPreferencesKey(if (account == 0) "downloads" else "downloads_$account")
     /** When synced data (lists, hidden chats, Continue watching) last changed on this device. */
     private val syncStampKey = longPreferencesKey("sync_stamp")
 
@@ -167,19 +176,153 @@ class Settings(private val context: Context) {
     }
 
     /** Items the user downloaded for offline playback. */
-    val downloads: Flow<List<SavedItem>> = context.dataStore.data.map { ListsJson.decodeItems(it[downloadsKey]) }
+    val downloads: Flow<List<SavedItem>> = context.dataStore.data.map {
+        ListsJson.decodeItems(it[downloadsKey(it[accountKey] ?: 0)])
+    }
 
     suspend fun addDownload(item: SavedItem) {
         context.dataStore.edit { prefs ->
-            val current = ListsJson.decodeItems(prefs[downloadsKey]).filter { it.id != item.id }
-            prefs[downloadsKey] = ListsJson.encodeItems(listOf(item) + current)
+            val key = downloadsKey(prefs[accountKey] ?: 0)
+            val current = ListsJson.decodeItems(prefs[key]).filter { it.id != item.id }
+            prefs[key] = ListsJson.encodeItems(listOf(item) + current)
         }
     }
 
     suspend fun removeDownload(itemId: String) {
         context.dataStore.edit { prefs ->
-            prefs[downloadsKey] = ListsJson.encodeItems(ListsJson.decodeItems(prefs[downloadsKey]).filter { it.id != itemId })
+            val key = downloadsKey(prefs[accountKey] ?: 0)
+            prefs[key] = ListsJson.encodeItems(ListsJson.decodeItems(prefs[key]).filter { it.id != itemId })
         }
+    }
+
+    suspend fun clearRecentSearches() {
+        context.dataStore.edit { it.remove(recentSearchesKey) }
+    }
+
+    suspend fun removeRecentSearch(query: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[recentSearchesKey]?.split('\n')?.filter { it.isNotBlank() } ?: emptyList()
+            prefs[recentSearchesKey] = current.filter { it != query }.joinToString("\n")
+        }
+    }
+
+    // ---- Parental lock (kept on this device only, never synced) ----
+
+    val lockedChats: Flow<Set<Long>> = context.dataStore.data.map { prefs ->
+        prefs[lockedChatsKey]?.mapNotNull { it.toLongOrNull() }?.toSet() ?: emptySet()
+    }
+
+    val hasPin: Flow<Boolean> = context.dataStore.data.map { it[pinHashKey] != null }
+
+    suspend fun setChatLocked(chatId: Long, locked: Boolean) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[lockedChatsKey] ?: emptySet()
+            prefs[lockedChatsKey] = if (locked) current + chatId.toString() else current - chatId.toString()
+        }
+    }
+
+    suspend fun setPin(pin: String?) {
+        context.dataStore.edit { prefs ->
+            if (pin == null) {
+                prefs.remove(pinHashKey)
+                prefs.remove(lockedChatsKey)
+            } else {
+                val salt = UUID.randomUUID().toString()
+                prefs[pinHashKey] = salt + ":" + hashPin(salt, pin)
+            }
+        }
+    }
+
+    suspend fun checkPin(pin: String): Boolean {
+        val stored = context.dataStore.data.first()[pinHashKey] ?: return true
+        val salt = stored.substringBefore(':')
+        return stored.substringAfter(':') == hashPin(salt, pin)
+    }
+
+    private fun hashPin(salt: String, pin: String): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest((salt + pin).toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+    // ---- New-upload notifications ----
+
+    val followedChats: Flow<Set<Long>> = context.dataStore.data.map { prefs ->
+        prefs[followedChatsKey]?.mapNotNull { it.toLongOrNull() }?.toSet() ?: emptySet()
+    }
+
+    suspend fun setChatFollowed(chatId: Long, followed: Boolean) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[followedChatsKey] ?: emptySet()
+            prefs[followedChatsKey] = if (followed) current + chatId.toString() else current - chatId.toString()
+        }
+    }
+
+    /** The newest message id already seen in a followed chat, 0 if never checked. */
+    suspend fun lastSeenMessage(chatId: Long): Long =
+        context.dataStore.data.first()[longPreferencesKey("seen_$chatId")] ?: 0L
+
+    suspend fun setLastSeenMessage(chatId: Long, messageId: Long) {
+        context.dataStore.edit { it[longPreferencesKey("seen_$chatId")] = messageId }
+    }
+
+    // ---- Duplicates ----
+
+    val hideDuplicates: Flow<Boolean> = context.dataStore.data.map { it[hideDuplicatesKey] ?: true }
+
+    suspend fun setHideDuplicates(value: Boolean) {
+        context.dataStore.edit { it[hideDuplicatesKey] = value }
+    }
+
+    // ---- Several Telegram accounts ----
+
+    val currentAccount: Flow<Int> = context.dataStore.data.map { it[accountKey] ?: 0 }
+
+    suspend fun account(): Int = currentAccount.first()
+
+    /** Accounts that have logged in on this device, with the name to show in the switcher. */
+    val accounts: Flow<List<Account>> = context.dataStore.data.map { decodeAccounts(it[accountsKey]) }
+
+    suspend fun selectAccount(index: Int) {
+        context.dataStore.edit { it[accountKey] = index }
+    }
+
+    /** Returns the index for a new, empty account slot. */
+    suspend fun newAccountIndex(): Int {
+        val prefs = context.dataStore.data.first()
+        val used = decodeAccounts(prefs[accountsKey]).map { it.index } + (prefs[accountKey] ?: 0)
+        return (used.maxOrNull() ?: 0) + 1
+    }
+
+    suspend fun saveAccount(account: Account) {
+        context.dataStore.edit { prefs ->
+            val others = decodeAccounts(prefs[accountsKey]).filter { it.index != account.index }
+            prefs[accountsKey] = encodeAccounts((others + account).sortedBy { it.index })
+        }
+    }
+
+    suspend fun removeAccount(index: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[accountsKey] = encodeAccounts(decodeAccounts(prefs[accountsKey]).filter { it.index != index })
+            prefs.remove(downloadsKey(index))
+        }
+    }
+
+    private fun decodeAccounts(json: String?): List<Account> {
+        if (json.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = org.json.JSONArray(json)
+            (0 until arr.length()).map {
+                val o = arr.getJSONObject(it)
+                Account(o.getInt("index"), o.optString("name"), o.optLong("userId"))
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodeAccounts(accounts: List<Account>): String {
+        val arr = org.json.JSONArray()
+        accounts.forEach {
+            arr.put(org.json.JSONObject().put("index", it.index).put("name", it.name).put("userId", it.userId))
+        }
+        return arr.toString()
     }
 
     // ---- Sync snapshot (see SyncManager) ----
@@ -210,6 +353,9 @@ class Settings(private val context: Context) {
         }
     }
 }
+
+/** A Telegram account logged in on this device. Index 0 is the first one. */
+data class Account(val index: Int, val name: String, val userId: Long)
 
 /** Everything that is shared between devices through Saved Messages. */
 data class SyncSnapshot(

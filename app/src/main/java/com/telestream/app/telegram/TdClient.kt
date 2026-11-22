@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.drinkless.tdlib.Client
@@ -80,6 +81,7 @@ class TdClient(private val context: Context, private val settings: Settings) {
         _authState.value = state
         when (state) {
             is TdApi.AuthorizationStateWaitTdlibParameters -> scope.launch { sendParameters() }
+            is TdApi.AuthorizationStateReady -> scope.launch { rememberAccount() }
             // After logOut or close, TDLib needs a brand-new client instance.
             is TdApi.AuthorizationStateClosed -> {
                 chats.clear()
@@ -94,10 +96,13 @@ class TdClient(private val context: Context, private val settings: Settings) {
     }
 
     private suspend fun sendParameters(creds: ApiCredentials) {
+        // Each account has its own TDLib database; account 0 keeps the original folders.
+        val account = settings.account()
+        val suffix = if (account == 0) "" else "_$account"
         val params = TdApi.SetTdlibParameters().apply {
             useTestDc = false
-            databaseDirectory = File(context.noBackupFilesDir, "tdlib").absolutePath
-            filesDirectory = File(context.filesDir, "tdfiles").absolutePath
+            databaseDirectory = File(context.noBackupFilesDir, "tdlib$suffix").absolutePath
+            filesDirectory = File(context.filesDir, "tdfiles$suffix").absolutePath
             databaseEncryptionKey = ByteArray(0)
             useFileDatabase = true
             useChatInfoDatabase = true
@@ -130,6 +135,33 @@ class TdClient(private val context: Context, private val settings: Settings) {
     suspend fun restart() {
         _authError.value = null
         runCatching { send(TdApi.Close()) }
+    }
+
+    /** Stores the logged-in user's name for the account switcher. */
+    private suspend fun rememberAccount() {
+        val me = runCatching { send(TdApi.GetMe()) }.getOrNull() ?: return
+        val name = listOf(me.firstName, me.lastName).filter { it.isNotBlank() }.joinToString(" ")
+            .ifEmpty { me.usernames?.activeUsernames?.firstOrNull()?.let { "@$it" } ?: "Account" }
+        settings.saveAccount(com.telestream.app.data.Account(settings.account(), name, me.id))
+    }
+
+    /** Switches to another account slot (a new one shows the login screens). */
+    suspend fun switchAccount(index: Int) {
+        if (index == settings.account()) return
+        settings.selectAccount(index)
+        restart()
+    }
+
+    /**
+     * Logs out of the current account. If other accounts are saved, switches to one of them;
+     * the TDLib restart after logOut then opens that account.
+     */
+    suspend fun logOutAndSwitch() {
+        val current = settings.account()
+        val other = settings.accounts.first().firstOrNull { it.index != current }
+        settings.removeAccount(current)
+        if (other != null) settings.selectAccount(other.index)
+        logOut()
     }
 
     suspend fun requestQrCode() = runAuth { send(TdApi.RequestQrCodeAuthentication(LongArray(0))) }

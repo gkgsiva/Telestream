@@ -78,6 +78,20 @@ import com.telestream.app.ui.common.LocalIsTv
 import com.telestream.app.ui.common.Loading
 import com.telestream.app.ui.common.MediaRow
 import com.telestream.app.ui.common.SmallLoading
+import com.telestream.app.data.ParentalLock
+import com.telestream.app.telegram.DateFilter
+import com.telestream.app.telegram.LengthFilter
+import com.telestream.app.telegram.QualityFilter
+import com.telestream.app.telegram.SearchFilters
+import com.telestream.app.telegram.SizeFilter
+import com.telestream.app.ui.settings.LockButton
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Switch
 
 @Composable
 fun HomeScreen(
@@ -87,6 +101,7 @@ fun HomeScreen(
     onAddToList: (MediaItem) -> Unit,
     onDownload: (MediaItem) -> Unit,
     onLogOut: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val isTv = LocalIsTv.current
@@ -103,6 +118,8 @@ fun HomeScreen(
                     Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            LockButton()
+            IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
             TextButton(onClick = onLogOut) { Text("Log out") }
         }
         TabRow(selectedTabIndex = tab) {
@@ -125,8 +142,12 @@ private fun ChatsTab(onOpenChat: (Long) -> Unit, onPlay: (List<MediaItem>, Int) 
     val app = TelestreamApp.instance
     val vm: ChatsViewModel = viewModel { ChatsViewModel(app.repository, app.settings) }
     val hidden by vm.hidden.collectAsStateWithLifecycle()
+    val locked by vm.locked.collectAsStateWithLifecycle()
+    val hasPin by app.settings.hasPin.collectAsStateWithLifecycle(initialValue = false)
     val isTv = LocalIsTv.current
-    val visible = if (vm.showHidden) vm.chats else vm.chats.filter { it.id !in hidden }
+    val blocked = ParentalLock.hiddenSet(locked)
+    val allowed = vm.chats.filter { it.id !in blocked }
+    val visible = if (vm.showHidden) allowed else allowed.filter { it.id !in hidden }
     val hiddenCount = vm.chats.count { it.id in hidden }
     when {
         vm.loading && vm.chats.isEmpty() -> Loading()
@@ -140,7 +161,7 @@ private fun ChatsTab(onOpenChat: (Long) -> Unit, onPlay: (List<MediaItem>, Int) 
             contentPadding = PaddingValues(horizontal = if (isTv) 48.dp else 12.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            item { ContinueWatchingRow(onPlay) }
+            item { ContinueWatchingRow(onPlay, blocked) }
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -154,20 +175,31 @@ private fun ChatsTab(onOpenChat: (Long) -> Unit, onPlay: (List<MediaItem>, Int) 
                             Text(if (vm.showHidden) "Hide hidden" else "Show hidden")
                         }
                     }
-                    TextButton(onClick = { vm.managing = !vm.managing }) { Text(if (vm.managing) "Done" else "Hide chats") }
+                    TextButton(onClick = { vm.managing = !vm.managing }) { Text(if (vm.managing) "Done" else "Hide or lock") }
                     IconButton(onClick = vm::refresh) { Icon(Icons.Default.Refresh, contentDescription = "Refresh") }
                 }
             }
             items(visible, key = { it.id }) { chat ->
                 val isHidden = chat.id in hidden
+                val isLocked = chat.id in locked
                 val rowModifier = Modifier.alpha(if (isHidden) 0.5f else 1f)
                 if (vm.managing || isHidden) {
                     ChatRow(chat, onClick = { onOpenChat(chat.id) }, modifier = rowModifier) {
-                        IconButton(onClick = { vm.setHidden(chat.id, !isHidden) }) {
-                            Icon(
-                                if (isHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                contentDescription = if (isHidden) "Show this chat" else "Hide this chat",
-                            )
+                        Row {
+                            if (vm.managing && hasPin) {
+                                IconButton(onClick = { vm.setLocked(chat.id, !isLocked) }) {
+                                    Icon(
+                                        if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                        contentDescription = if (isLocked) "Remove parental lock" else "Lock with PIN",
+                                    )
+                                }
+                            }
+                            IconButton(onClick = { vm.setHidden(chat.id, !isHidden) }) {
+                                Icon(
+                                    if (isHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = if (isHidden) "Show this chat" else "Hide this chat",
+                                )
+                            }
                         }
                     }
                 } else {
@@ -188,6 +220,10 @@ private fun SearchTab(
     val app = TelestreamApp.instance
     val vm: SearchViewModel = viewModel { SearchViewModel(app.repository, app.settings) }
     val recent by vm.recent.collectAsStateWithLifecycle()
+    val hideDuplicates by vm.hideDuplicates.collectAsStateWithLifecycle()
+    val locked by vm.locked.collectAsStateWithLifecycle()
+    val shown = vm.visibleResults(hideDuplicates, locked)
+    val blockedChats = ParentalLock.hiddenSet(locked)
     val keyboard = LocalSoftwareKeyboardController.current
     val isTv = LocalIsTv.current
     val side = if (isTv) 48.dp else 12.dp
@@ -252,15 +288,45 @@ private fun SearchTab(
                     items(MediaFilter.entries) { f ->
                         FilterChip(selected = vm.filter == f, onClick = { vm.selectFilter(f) }, label = { Text(f.label) })
                     }
+                    item { Spacer(Modifier.width(16.dp)) }
+                    item {
+                        FilterChip(
+                            selected = vm.filters.isActive || vm.showFilters,
+                            onClick = { vm.showFilters = !vm.showFilters },
+                            label = { Text(if (vm.filters.isActive) "Filters on" else "Filters") },
+                            leadingIcon = { Icon(Icons.Default.FilterList, contentDescription = null) },
+                        )
+                    }
                 }
+            }
+        }
+        if (vm.scope == SearchScope.MY_CHATS && vm.showFilters) {
+            item {
+                FilterPanel(
+                    filters = vm.filters,
+                    onChange = { vm.filters = it },
+                    hideDuplicates = hideDuplicates,
+                    onHideDuplicates = vm::setHideDuplicates,
+                )
             }
         }
 
         if (!vm.searched && recent.isNotEmpty()) {
-            item { Text("Recent searches", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(recent) { q -> AssistChip(onClick = { vm.search(q) }, label = { Text(q) }) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Search history", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = vm::clearRecent) { Text("Clear") }
+                }
+            }
+            items(recent, key = { "recent-$it" }) { q ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { vm.search(q) }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.History, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(q, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    IconButton(onClick = { vm.removeRecent(q) }) { Icon(Icons.Default.Close, contentDescription = "Remove from history") }
                 }
             }
         }
@@ -282,15 +348,24 @@ private fun SearchTab(
                     InviteCard(preview, vm.joinMessage, onJoin = { vm.joinInvite(onOpenChat) }, onOpen = { onOpenChat(preview.chatId) })
                 }
             }
-            items(vm.channels, key = { it.id }) { chat -> ChatRow(chat, onClick = { onOpenChat(chat.id) }) }
+            items(vm.channels.filter { it.id !in blockedChats }, key = { it.id }) { chat -> ChatRow(chat, onClick = { onOpenChat(chat.id) }) }
             if (vm.searched && !vm.loading && vm.channels.isEmpty() && vm.invite == null && vm.error == null) {
                 item { Text("No public channels or groups found.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         } else {
-            itemsIndexed(vm.results, key = { _, item -> item.id }) { index, item ->
+            if (shown.size < vm.results.size && vm.results.isNotEmpty()) {
+                item {
+                    Text(
+                        "${vm.results.size - shown.size} results hidden by filters, duplicates or the parental lock",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            itemsIndexed(shown, key = { _, item -> item.id }) { index, item ->
                 MediaRow(
                     item,
-                    onClick = { onPlay(vm.results.toList(), index) },
+                    onClick = { onPlay(shown, index) },
                     onAddToList = { onAddToList(item) },
                     onDownload = { onDownload(item) },
                 )
@@ -301,7 +376,7 @@ private fun SearchTab(
                     SmallLoading()
                 }
             }
-            if (vm.searched && vm.endReached && vm.results.isEmpty() && vm.error == null) {
+            if (vm.searched && vm.endReached && shown.isEmpty() && vm.error == null) {
                 item {
                     Text(
                         "Nothing found in your chats. Try another word, or find a channel under \"Find channels\".",
@@ -346,9 +421,10 @@ private fun InviteCard(preview: InvitePreview, message: String?, onJoin: () -> U
 
 /** Videos the user started, newest first, with how far they got. */
 @Composable
-private fun ContinueWatchingRow(onPlay: (List<MediaItem>, Int) -> Unit) {
+private fun ContinueWatchingRow(onPlay: (List<MediaItem>, Int) -> Unit, blocked: Set<Long>) {
     val app = TelestreamApp.instance
-    val entries by app.settings.continueWatching.collectAsStateWithLifecycle(initialValue = emptyList())
+    val all by app.settings.continueWatching.collectAsStateWithLifecycle(initialValue = emptyList())
+    val entries = all.filter { it.item.chatId !in blocked }
     val scope = rememberCoroutineScope()
     if (entries.isEmpty()) return
     Column(Modifier.padding(bottom = 8.dp)) {
@@ -384,6 +460,42 @@ private fun ContinueWatchingRow(onPlay: (List<MediaItem>, Int) -> Unit) {
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FilterPanel(
+    filters: SearchFilters,
+    onChange: (SearchFilters) -> Unit,
+    hideDuplicates: Boolean,
+    onHideDuplicates: (Boolean) -> Unit,
+) {
+    Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            FilterLine("Size", SizeFilter.entries, filters.size, { it.label }) { onChange(filters.copy(size = it)) }
+            FilterLine("Length", LengthFilter.entries, filters.length, { it.label }) { onChange(filters.copy(length = it)) }
+            FilterLine("Quality", QualityFilter.entries, filters.quality, { it.label }) { onChange(filters.copy(quality = it)) }
+            FilterLine("Date", DateFilter.entries, filters.date, { it.label }) { onChange(filters.copy(date = it)) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Hide duplicate reposts", modifier = Modifier.weight(1f))
+                Switch(checked = hideDuplicates, onCheckedChange = onHideDuplicates)
+            }
+            if (filters.isActive) {
+                TextButton(onClick = { onChange(SearchFilters()) }) { Text("Clear filters") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> FilterLine(title: String, options: List<T>, selected: T, label: (T) -> String, onSelect: (T) -> Unit) {
+    Column {
+        Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(options) { option ->
+                FilterChip(selected = option == selected, onClick = { onSelect(option) }, label = { Text(label(option)) })
             }
         }
     }

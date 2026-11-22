@@ -13,6 +13,9 @@ import com.telestream.app.telegram.InvitePreview
 import com.telestream.app.telegram.isInviteLink
 import com.telestream.app.telegram.MediaFilter
 import com.telestream.app.telegram.MediaItem
+import com.telestream.app.telegram.SearchFilters
+import com.telestream.app.telegram.withoutDuplicates
+import com.telestream.app.data.ParentalLock
 import com.telestream.app.telegram.TelegramRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharingStarted
@@ -27,6 +30,13 @@ class ChatsViewModel(private val repo: TelegramRepository, private val settings:
 
     val hidden: StateFlow<Set<Long>> =
         settings.hiddenChats.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    val locked: StateFlow<Set<Long>> =
+        settings.lockedChats.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    fun setLocked(chatId: Long, lock: Boolean) {
+        viewModelScope.launch { settings.setChatLocked(chatId, lock) }
+    }
 
     /** When on, every chat shows a Hide or Show button. */
     var managing by mutableStateOf(false)
@@ -75,6 +85,33 @@ class SearchViewModel(private val repo: TelegramRepository, private val settings
         private set
 
     val results = mutableStateListOf<MediaItem>()
+    var filters by mutableStateOf(SearchFilters())
+    var showFilters by mutableStateOf(false)
+
+    val hideDuplicates: StateFlow<Boolean> =
+        settings.hideDuplicates.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val locked: StateFlow<Set<Long>> =
+        settings.lockedChats.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /** Results after filters, duplicate removal and the parental lock. */
+    fun visibleResults(hideDuplicates: Boolean, locked: Set<Long>): List<MediaItem> {
+        val blocked = ParentalLock.hiddenSet(locked)
+        val now = System.currentTimeMillis() / 1000
+        val shown = results.filter { it.chatId !in blocked && filters.matches(it, now) }
+        return if (hideDuplicates) shown.withoutDuplicates() else shown
+    }
+
+    fun setHideDuplicates(value: Boolean) {
+        viewModelScope.launch { settings.setHideDuplicates(value) }
+    }
+
+    fun removeRecent(q: String) {
+        viewModelScope.launch { settings.removeRecentSearch(q) }
+    }
+
+    fun clearRecent() {
+        viewModelScope.launch { settings.clearRecentSearches() }
+    }
     var channels by mutableStateOf<List<ChatSummary>>(emptyList())
         private set
     var loading by mutableStateOf(false)

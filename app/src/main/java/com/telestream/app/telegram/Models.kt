@@ -38,6 +38,8 @@ data class MediaItem(
     val width: Int,
     val height: Int,
     val date: Int,
+    /** Telegram's id for the file content; the same file reposted elsewhere keeps it. */
+    val uniqueId: String = "",
 ) {
     /** Stable id used for resume positions and Media3 media ids. */
     val id: String get() = "$chatId:$messageId"
@@ -125,6 +127,7 @@ data class MediaItem(
             width = width,
             height = height,
             date = message.date,
+            uniqueId = file.remote?.uniqueId.orEmpty(),
         )
     }
 }
