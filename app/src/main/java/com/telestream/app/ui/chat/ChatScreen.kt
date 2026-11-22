@@ -67,6 +67,7 @@ fun ChatScreen(
     onPlay: (List<MediaItem>, Int) -> Unit,
     onAddToList: (MediaItem) -> Unit,
     onDownload: (MediaItem) -> Unit,
+    onPlayEpisodes: (List<MediaItem>, Int) -> Unit = onPlay,
 ) {
     val app = TelestreamApp.instance
     val vm: ChatViewModel = viewModel(key = "chat-$chatId") { ChatViewModel(app.repository, chatId) }
@@ -129,7 +130,7 @@ fun ChatScreen(
             Tab(selected = vm.seriesMode, onClick = { vm.showSeries() }, text = { Text("Series") })
         }
         if (vm.seriesMode) {
-            SeriesList(vm, side, onPlay, onAddToList, onDownload)
+            SeriesList(vm, side, onPlayEpisodes, onAddToList, onDownload)
         } else LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = side, vertical = 12.dp),
@@ -241,7 +242,11 @@ private fun SeriesList(
                     )
                     MediaRow(
                         item,
-                        onClick = { onPlay(episodes.map { it.second }, index) },
+                        onClick = {
+                            // Queue every episode of the show in order, so the next one can play on its own.
+                            val all = show.seasons.keys.sorted().flatMap { n -> show.seasons[n].orEmpty().map { it.second } }
+                            onPlay(all, all.indexOf(item).coerceAtLeast(0))
+                        },
                         onAddToList = { onAddToList(item) },
                         onDownload = { onDownload(item) },
                     )

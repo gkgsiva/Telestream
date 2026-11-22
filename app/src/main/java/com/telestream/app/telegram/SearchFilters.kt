@@ -66,3 +66,66 @@ fun MediaItem.duplicateKey(): String =
 
 /** Keeps the first copy of each file. */
 fun List<MediaItem>.withoutDuplicates(): List<MediaItem> = distinctBy { it.duplicateKey() }
+
+private val qualityWords = Regex(
+    """(?i)\b(2160p|1080p|720p|576p|480p|360p|4k|uhd|fhd|hd|hdr10?|dv|x264|x265|h\.?264|h\.?265|hevc|avc|10bit|8bit|""" +
+        """web-?dl|web-?rip|webrip|blu-?ray|brrip|bdrip|hdrip|dvdrip|hdtv|aac\d?(\.\d)?|ac3|dd\+?5\.1|ddp?5\.1|atmos|esub|esubs|""" +
+        """dual audio|multi|proper|repack|remux)\b""",
+)
+
+/** Title with quality, codec and file-type words removed, so the same movie in 720p and 1080p match. */
+fun MediaItem.versionKey(): String {
+    val base = title.lowercase()
+        .replace(Regex("""\.(mkv|mp4|m4v|avi|mov|webm|ts)$"""), "")
+        .replace(Regex("""\[[^\]]*]|\([^)]*\)"""), " ")
+        .replace('.', ' ').replace('_', ' ')
+        .replace(qualityWords, " ")
+        .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+        .trim()
+    return "${kind.name}:$base"
+}
+
+/** "4K", "1080p", "720p" and so on, from the video size or the file name. */
+fun MediaItem.qualityLabel(): String? {
+    val shortSide = minOf(width, height).takeIf { it > 0 } ?: height
+    if (shortSide > 0) {
+        return when {
+            shortSide >= 2000 -> "4K"
+            shortSide >= 1000 -> "1080p"
+            shortSide >= 700 -> "720p"
+            shortSide >= 540 -> "576p"
+            else -> "${shortSide}p"
+        }
+    }
+    val text = (title + " " + subtitle).lowercase()
+    return when {
+        "2160p" in text || "4k" in text -> "4K"
+        "1080p" in text -> "1080p"
+        "720p" in text -> "720p"
+        "480p" in text -> "480p"
+        else -> null
+    }
+}
+
+private fun MediaItem.qualityRank(): Int = when (qualityLabel()) {
+    "4K" -> 4
+    "1080p" -> 3
+    "720p" -> 2
+    null -> 0
+    else -> 1
+}
+
+/**
+ * Groups videos that are the same title in different qualities. Each group lists the best
+ * quality first; groups keep the order in which they first appear.
+ */
+fun List<MediaItem>.groupVersions(): List<List<MediaItem>> {
+    val groups = LinkedHashMap<String, MutableList<MediaItem>>()
+    for (item in this) {
+        val key = item.versionKey()
+        // Very short names ("video", "1") would lump unrelated files together.
+        val usable = item.kind == MediaKind.VIDEO && key.substringAfter(':').length >= 4
+        groups.getOrPut(if (usable) key else "single:${item.id}") { mutableListOf() }.add(item)
+    }
+    return groups.values.map { group -> group.sortedWith(compareByDescending<MediaItem> { it.qualityRank() }.thenByDescending { it.size }) }
+}

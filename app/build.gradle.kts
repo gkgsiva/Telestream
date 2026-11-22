@@ -86,6 +86,7 @@ dependencies {
     implementation(libs.androidx.media3.cast)
     implementation(libs.androidx.mediarouter)
     implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.tvprovider)
 
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.coroutines.android)

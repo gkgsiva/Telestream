@@ -264,6 +264,61 @@ class Settings(private val context: Context) {
         context.dataStore.edit { it[longPreferencesKey("seen_$chatId")] = messageId }
     }
 
+    // ---- Simple device-only preferences ----
+
+    private fun <T> pref(key: androidx.datastore.preferences.core.Preferences.Key<T>, default: T): Flow<T> =
+        context.dataStore.data.map { it[key] ?: default }
+
+    private suspend fun <T> put(key: androidx.datastore.preferences.core.Preferences.Key<T>, value: T) {
+        context.dataStore.edit { it[key] = value }
+    }
+
+    private val openSubtitlesKeyKey = stringPreferencesKey("opensubtitles_key")
+    private val subtitleLanguagesKey = stringPreferencesKey("subtitle_languages")
+    private val wifiOnlyKey = booleanPreferencesKey("downloads_wifi_only")
+    private val downloadLimitKey = intPreferencesKey("downloads_limit_gb")
+    private val autoDeleteKey = booleanPreferencesKey("downloads_auto_delete")
+    private val eqPresetKey = intPreferencesKey("eq_preset")
+    private val steadyVolumeKey = booleanPreferencesKey("steady_volume")
+    private val fadeSecondsKey = intPreferencesKey("fade_seconds")
+    private val groupVersionsKey = booleanPreferencesKey("group_versions")
+    private val autoplayNextKey = booleanPreferencesKey("autoplay_next")
+
+    /** The user's own OpenSubtitles API key; empty when not set. */
+    val openSubtitlesKey: Flow<String> = pref(openSubtitlesKeyKey, "")
+    suspend fun setOpenSubtitlesKey(value: String) = put(openSubtitlesKeyKey, value.trim())
+
+    /** Comma separated language codes, like "en,ta". */
+    val subtitleLanguages: Flow<String> = pref(subtitleLanguagesKey, "en")
+    suspend fun setSubtitleLanguages(value: String) = put(subtitleLanguagesKey, value.trim())
+
+    val wifiOnlyDownloads: Flow<Boolean> = pref(wifiOnlyKey, false)
+    suspend fun setWifiOnlyDownloads(value: Boolean) = put(wifiOnlyKey, value)
+
+    /** Download storage limit in GB, 0 for none. */
+    val downloadLimitGb: Flow<Int> = pref(downloadLimitKey, 0)
+    suspend fun setDownloadLimitGb(value: Int) = put(downloadLimitKey, value)
+
+    val autoDeleteWatched: Flow<Boolean> = pref(autoDeleteKey, false)
+    suspend fun setAutoDeleteWatched(value: Boolean) = put(autoDeleteKey, value)
+
+    /** Equalizer preset index, -1 for off. */
+    val eqPreset: Flow<Int> = pref(eqPresetKey, -1)
+    suspend fun setEqPreset(value: Int) = put(eqPresetKey, value)
+
+    val steadyVolume: Flow<Boolean> = pref(steadyVolumeKey, false)
+    suspend fun setSteadyVolume(value: Boolean) = put(steadyVolumeKey, value)
+
+    /** Seconds to fade music out and in between songs, 0 for off. */
+    val fadeSeconds: Flow<Int> = pref(fadeSecondsKey, 0)
+    suspend fun setFadeSeconds(value: Int) = put(fadeSecondsKey, value)
+
+    val groupVersions: Flow<Boolean> = pref(groupVersionsKey, true)
+    suspend fun setGroupVersions(value: Boolean) = put(groupVersionsKey, value)
+
+    val autoplayNext: Flow<Boolean> = pref(autoplayNextKey, true)
+    suspend fun setAutoplayNext(value: Boolean) = put(autoplayNextKey, value)
+
     // ---- Duplicates ----
 
     val hideDuplicates: Flow<Boolean> = context.dataStore.data.map { it[hideDuplicatesKey] ?: true }

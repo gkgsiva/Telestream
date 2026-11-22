@@ -54,6 +54,18 @@ part you are watching. There is no server.
 - **Info and updates:** Settings, then Info shows the version and has Check for update, which
   downloads the newest signed APK from GitHub Releases and opens the installer. This needs the
   releases to be reachable without a login (a public repository).
+- **Next episode:** playing an episode from the Series tab queues the rest of the show; a countdown
+  offers the next episode near the end (turn autoplay off in Settings).
+- **Android TV home screen:** Continue watching also appears in the TV launcher's Play next row.
+- **Versions:** the same title in 720p, 1080p and 4K shows once in search, with a chip per version.
+- **New in your channels:** the newest uploads from channels you follow with the bell, on My chats.
+- **Subtitle download:** the Subtitles button in the player searches OpenSubtitles.com. Each user
+  enters their own free OpenSubtitles API key in Settings, then Subtitles.
+- **Smarter downloads:** Settings, then Downloads: Wi-Fi only, a storage limit, and deleting videos
+  after they are watched.
+- **Sound:** on Now playing, an equalizer, steady volume (Android 9+) and fading between songs.
+- **Backup:** Settings, then Backup saves lists, hidden chats, Continue watching and followed
+  channels to a file, and restores them.
 - **Voice search:** the mic in the search field, or "Search by voice" on Android TV.
 - **Sync between phone and TV:** lists, hidden chats and Continue watching are kept in a
   `telestream-sync.json` file in your Telegram Saved Messages. Log in with the same account on both

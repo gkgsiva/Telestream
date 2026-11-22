@@ -27,6 +27,7 @@ class TelestreamApp : Application() {
         td = TdClient(this, settings)
         repository = TelegramRepository(td)
         sync = SyncManager(this, td, settings)
+        com.telestream.app.data.DownloadPolicy.start(this)
     }
 
     companion object {

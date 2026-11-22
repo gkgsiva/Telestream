@@ -148,7 +148,7 @@ class SyncManager(
         syncedStamp = stamp
     }
 
-    private fun encode(s: SyncSnapshot): String = JSONObject()
+    fun encode(s: SyncSnapshot): String = JSONObject()
         .put("version", 1)
         .put("stamp", s.stamp)
         .put("lists", JSONArray(ListsJson.encode(s.lists)))
@@ -156,7 +156,7 @@ class SyncManager(
         .put("resume", JSONArray(ListsJson.encodeResume(s.resume)))
         .toString()
 
-    private fun decode(text: String): SyncSnapshot? = try {
+    fun decode(text: String): SyncSnapshot? = try {
         val o = JSONObject(text)
         val hidden = o.optJSONArray("hidden") ?: JSONArray()
         SyncSnapshot(

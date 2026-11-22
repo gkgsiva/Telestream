@@ -65,7 +65,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
@@ -145,6 +148,7 @@ fun PlayerScreen(
     onPlayOnTv: (() -> Unit)? = null,
 ) {
     var pickingCast by remember { mutableStateOf(false) }
+    var findingSubtitles by remember { mutableStateOf(false) }
     val context = LocalContext.current
     DisposableEffect(Unit) {
         val window = (context as? Activity)?.window
@@ -199,6 +203,9 @@ fun PlayerScreen(
                 if (onPlayOnTv != null) {
                     TextButton(onClick = onPlayOnTv) { Text("Play on TV", color = Color.White) }
                 }
+                if (current != null) {
+                    TextButton(onClick = { findingSubtitles = true }) { Text("Subtitles", color = Color.White) }
+                }
                 if (current != null && CastManager.available) {
                     TextButton(onClick = { pickingCast = true }) { Text("Cast", color = Color.White) }
                 }
@@ -207,7 +214,11 @@ fun PlayerScreen(
                 }
             }
             if (CastManager.casting) CastingOverlay(Modifier.align(Alignment.Center))
+            if (player != null) NextEpisodeCountdown(player, Modifier.align(Alignment.BottomEnd).padding(24.dp))
         }
+    }
+    if (findingSubtitles && current != null && player != null) {
+        SubtitleSearchDialog(current, player, onDismiss = { findingSubtitles = false })
     }
     if (pickingCast && current != null) {
         CastPicker(
@@ -479,6 +490,7 @@ private fun CoverArt(item: AppMediaItem?, modifier: Modifier) {
 @Composable
 private fun SleepAndLyricsRow(player: Player, state: NowPlaying, showLyrics: Boolean, onToggleLyrics: () -> Unit) {
     var choosing by remember { mutableStateOf(false) }
+    var soundOpen by remember { mutableStateOf(false) }
     val endsAt = SleepTimer.endsAt
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(endsAt) {
@@ -498,7 +510,13 @@ private fun SleepAndLyricsRow(player: Player, state: NowPlaying, showLyrics: Boo
             Spacer(Modifier.width(6.dp))
             Text(if (showLyrics) "Hide lyrics" else "Lyrics")
         }
+        TextButton(onClick = { soundOpen = true }) {
+            Icon(Icons.Default.GraphicEq, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Sound")
+        }
     }
+    if (soundOpen) SoundDialog(onDismiss = { soundOpen = false })
     if (choosing) {
         AlertDialog(
             onDismissRequest = { choosing = false },
@@ -559,4 +577,219 @@ private fun LyricsPanel(title: String, artist: String, durationMs: Long, positio
             )
         }
     }
+}
+
+/**
+ * In the last seconds of an episode with another one queued: offers to play the next one now, or
+ * to stay. With autoplay off in Settings, it pauses at the end instead of moving on.
+ */
+@Composable
+private fun NextEpisodeCountdown(player: Player, modifier: Modifier) {
+    val app = com.telestream.app.TelestreamApp.instance
+    val autoplay by app.settings.autoplayNext.collectAsStateWithLifecycle(initialValue = true)
+    var remaining by remember { mutableStateOf(Long.MAX_VALUE) }
+    var hasNext by remember { mutableStateOf(false) }
+    var nextTitle by remember { mutableStateOf("") }
+    var dismissedFor by remember { mutableStateOf<String?>(null) }
+    var currentId by remember { mutableStateOf("") }
+    LaunchedEffect(player) {
+        while (true) {
+            val duration = player.duration
+            remaining = if (duration > 0) duration - player.currentPosition else Long.MAX_VALUE
+            hasNext = player.hasNextMediaItem() && player.mediaMetadata.mediaType == MediaMetadata.MEDIA_TYPE_VIDEO
+            currentId = player.currentMediaItem?.mediaId.orEmpty()
+            nextTitle = if (hasNext) player.getMediaItemAt(player.nextMediaItemIndex).mediaMetadata.title?.toString().orEmpty() else ""
+            if (hasNext && !autoplay && remaining < 1_500 && player.isPlaying) player.pause()
+            delay(500)
+        }
+    }
+    if (!hasNext || remaining > 15_000 || dismissedFor == currentId) return
+    Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), shape = MaterialTheme.shapes.medium, modifier = modifier) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                if (autoplay) "Next episode in ${(remaining / 1000).coerceAtLeast(0)} s" else "Next episode",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(nextTitle, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(260.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                androidx.compose.material3.Button(onClick = { player.seekToNextMediaItem(); player.play() }) { Text("Play now") }
+                if (autoplay) {
+                    TextButton(onClick = {
+                        // Stay on this episode: drop the rest of the queue.
+                        dismissedFor = currentId
+                        val next = player.currentMediaItemIndex + 1
+                        if (next < player.mediaItemCount) player.removeMediaItems(next, player.mediaItemCount)
+                    }) { Text("Cancel") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleSearchDialog(item: AppMediaItem, player: Player, onDismiss: () -> Unit) {
+    val app = com.telestream.app.TelestreamApp.instance
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val apiKey by app.settings.openSubtitlesKey.collectAsStateWithLifecycle(initialValue = "")
+    val savedLanguages by app.settings.subtitleLanguages.collectAsStateWithLifecycle(initialValue = "en")
+    var query by remember { mutableStateOf(com.telestream.app.subtitles.OpenSubtitles.queryFor(item)) }
+    var languages by remember(savedLanguages) { mutableStateOf(savedLanguages) }
+    var results by remember { mutableStateOf<List<com.telestream.app.subtitles.SubtitleResult>>(emptyList()) }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    fun search() {
+        busy = true
+        message = null
+        scope.launch {
+            try {
+                app.settings.setSubtitleLanguages(languages)
+                results = com.telestream.app.subtitles.OpenSubtitles.search(context, apiKey, query, languages, item)
+                if (results.isEmpty()) message = "No subtitles found. Try a shorter name."
+            } catch (e: Exception) {
+                message = e.message
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Find subtitles") },
+        text = {
+            if (apiKey.isBlank()) {
+                Text(
+                    "Subtitles come from OpenSubtitles.com. Create a free account there, add an API consumer to get an API key, " +
+                        "and enter it in Settings, then Subtitles.",
+                )
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    item {
+                        androidx.compose.material3.OutlinedTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            label = { Text("Movie or show name") },
+                            singleLine = true,
+                        )
+                    }
+                    item {
+                        androidx.compose.material3.OutlinedTextField(
+                            value = languages,
+                            onValueChange = { languages = it },
+                            label = { Text("Languages, like en,ta,hi") },
+                            singleLine = true,
+                        )
+                    }
+                    item { TextButton(enabled = !busy && query.isNotBlank(), onClick = { search() }) { Text(if (busy) "Working…" else "Search") } }
+                    message?.let { m -> item { Text(m, color = MaterialTheme.colorScheme.primary) } }
+                    itemsIndexed(results) { _, result ->
+                        TextButton(enabled = !busy, onClick = {
+                            busy = true
+                            scope.launch {
+                                try {
+                                    val sub = com.telestream.app.subtitles.OpenSubtitles.download(context, apiKey, result)
+                                    applySubtitle(player, sub)
+                                    onDismiss()
+                                } catch (e: Exception) {
+                                    message = e.message
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        }) {
+                            Column(Modifier.fillMaxWidth()) {
+                                Text(result.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    "${result.language.uppercase()} · ${result.downloads} downloads",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+/** Swaps the playing item for one with the downloaded subtitle, keeping the position. */
+private fun applySubtitle(player: Player, sub: com.telestream.app.subtitles.DownloadedSubtitle) {
+    val currentItem = player.currentMediaItem ?: return
+    val index = player.currentMediaItemIndex
+    val position = player.currentPosition
+    val extras = android.os.Bundle().apply {
+        putString(com.telestream.app.player.PlaybackService.EXTRA_SUBTITLE_PATH, sub.file.absolutePath)
+        putString(com.telestream.app.player.PlaybackService.EXTRA_SUBTITLE_MIME, sub.mimeType)
+        putString(com.telestream.app.player.PlaybackService.EXTRA_SUBTITLE_LANGUAGE, sub.language)
+    }
+    val request = androidx.media3.common.MediaItem.RequestMetadata.Builder()
+        .setMediaUri(currentItem.requestMetadata.mediaUri)
+        .setExtras(extras)
+        .build()
+    player.replaceMediaItem(index, currentItem.buildUpon().setRequestMetadata(request).build())
+    player.seekTo(index, position)
+    player.play()
+}
+
+@Composable
+private fun SoundDialog(onDismiss: () -> Unit) {
+    val app = com.telestream.app.TelestreamApp.instance
+    val scope = rememberCoroutineScope()
+    val preset by app.settings.eqPreset.collectAsStateWithLifecycle(initialValue = -1)
+    val steady by app.settings.steadyVolume.collectAsStateWithLifecycle(initialValue = false)
+    val fade by app.settings.fadeSeconds.collectAsStateWithLifecycle(initialValue = 0)
+    val presets = com.telestream.app.player.MusicEffects.presetNames
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sound") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Equalizer", style = MaterialTheme.typography.labelLarge)
+                if (presets.isEmpty()) {
+                    Text("This device has no equalizer.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        item {
+                            androidx.compose.material3.FilterChip(
+                                selected = preset < 0,
+                                onClick = { scope.launch { app.settings.setEqPreset(-1) } },
+                                label = { Text("Off") },
+                            )
+                        }
+                        items(presets.size) { i ->
+                            androidx.compose.material3.FilterChip(
+                                selected = preset == i,
+                                onClick = { scope.launch { app.settings.setEqPreset(i) } },
+                                label = { Text(presets[i]) },
+                            )
+                        }
+                    }
+                }
+                if (com.telestream.app.player.MusicEffects.steadyAvailable) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Steady volume")
+                            Text("Evens out loud and quiet songs", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        androidx.compose.material3.Switch(checked = steady, onCheckedChange = { v -> scope.launch { app.settings.setSteadyVolume(v) } })
+                    }
+                }
+                Text("Fade between songs", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(0, 3, 6, 10).forEach { seconds ->
+                        androidx.compose.material3.FilterChip(
+                            selected = fade == seconds,
+                            onClick = { scope.launch { app.settings.setFadeSeconds(seconds) } },
+                            label = { Text(if (seconds == 0) "Off" else "$seconds s") },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
 }

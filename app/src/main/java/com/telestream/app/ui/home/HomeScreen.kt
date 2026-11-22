@@ -84,6 +84,8 @@ import com.telestream.app.telegram.LengthFilter
 import com.telestream.app.telegram.QualityFilter
 import com.telestream.app.telegram.SearchFilters
 import com.telestream.app.telegram.SizeFilter
+import com.telestream.app.telegram.groupVersions
+import com.telestream.app.telegram.qualityLabel
 import com.telestream.app.ui.settings.LockButton
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
@@ -162,6 +164,7 @@ private fun ChatsTab(onOpenChat: (Long) -> Unit, onPlay: (List<MediaItem>, Int) 
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             item { ContinueWatchingRow(onPlay, blocked) }
+            item { NewInChannelsRow(onPlay, blocked) }
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -218,11 +221,14 @@ private fun SearchTab(
     onDownload: (MediaItem) -> Unit,
 ) {
     val app = TelestreamApp.instance
+    val scope = rememberCoroutineScope()
     val vm: SearchViewModel = viewModel { SearchViewModel(app.repository, app.settings) }
     val recent by vm.recent.collectAsStateWithLifecycle()
     val hideDuplicates by vm.hideDuplicates.collectAsStateWithLifecycle()
     val locked by vm.locked.collectAsStateWithLifecycle()
     val shown = vm.visibleResults(hideDuplicates, locked)
+    val groupVersions by app.settings.groupVersions.collectAsStateWithLifecycle(initialValue = true)
+    val groups = if (groupVersions) shown.groupVersions() else shown.map { listOf(it) }
     val blockedChats = ParentalLock.hiddenSet(locked)
     val keyboard = LocalSoftwareKeyboardController.current
     val isTv = LocalIsTv.current
@@ -307,6 +313,8 @@ private fun SearchTab(
                     onChange = { vm.filters = it },
                     hideDuplicates = hideDuplicates,
                     onHideDuplicates = vm::setHideDuplicates,
+                    groupVersions = groupVersions,
+                    onGroupVersions = { value -> scope.launch { app.settings.setGroupVersions(value) } },
                 )
             }
         }
@@ -362,13 +370,17 @@ private fun SearchTab(
                     )
                 }
             }
-            itemsIndexed(shown, key = { _, item -> item.id }) { index, item ->
-                MediaRow(
-                    item,
-                    onClick = { onPlay(shown, index) },
-                    onAddToList = { onAddToList(item) },
-                    onDownload = { onDownload(item) },
-                )
+            itemsIndexed(groups, key = { _, group -> group.first().id }) { index, group ->
+                val item = group.first()
+                Column {
+                    MediaRow(
+                        item,
+                        onClick = { onPlay(groups.map { it.first() }, index) },
+                        onAddToList = { onAddToList(item) },
+                        onDownload = { onDownload(item) },
+                    )
+                    if (group.size > 1) VersionChips(group, onPick = { onPlay(listOf(it), 0) })
+                }
             }
             if (vm.searched && !vm.endReached) {
                 item(key = "more-${vm.pagesLoaded}") {
@@ -471,6 +483,8 @@ private fun FilterPanel(
     onChange: (SearchFilters) -> Unit,
     hideDuplicates: Boolean,
     onHideDuplicates: (Boolean) -> Unit,
+    groupVersions: Boolean,
+    onGroupVersions: (Boolean) -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.medium) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -481,6 +495,10 @@ private fun FilterPanel(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Hide duplicate reposts", modifier = Modifier.weight(1f))
                 Switch(checked = hideDuplicates, onCheckedChange = onHideDuplicates)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Show 720p, 1080p and 4K copies as one title", modifier = Modifier.weight(1f))
+                Switch(checked = groupVersions, onCheckedChange = onGroupVersions)
             }
             if (filters.isActive) {
                 TextButton(onClick = { onChange(SearchFilters()) }) { Text("Clear filters") }
@@ -496,6 +514,69 @@ private fun <T> FilterLine(title: String, options: List<T>, selected: T, label: 
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(options) { option ->
                 FilterChip(selected = option == selected, onClick = { onSelect(option) }, label = { Text(label(option)) })
+            }
+        }
+    }
+}
+
+/** The other qualities of one title, for example "1080p · 2.1 GB" and "720p · 900 MB". */
+@Composable
+private fun VersionChips(group: List<MediaItem>, onPick: (MediaItem) -> Unit) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(start = 8.dp, top = 4.dp)) {
+        item {
+            Text(
+                "${group.size} versions",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 12.dp, end = 4.dp),
+            )
+        }
+        items(group, key = { it.id }) { version ->
+            val label = listOfNotNull(version.qualityLabel(), com.telestream.app.ui.common.formatSize(version.size)).joinToString(" · ")
+            AssistChip(onClick = { onPick(version) }, label = { Text(label) })
+        }
+    }
+}
+
+/** The newest videos and songs from channels the user follows with the bell. */
+@Composable
+private fun NewInChannelsRow(onPlay: (List<MediaItem>, Int) -> Unit, blocked: Set<Long>) {
+    val app = TelestreamApp.instance
+    val followed by app.settings.followedChats.collectAsStateWithLifecycle(initialValue = emptySet())
+    var items by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    LaunchedEffect(followed) {
+        items = followed.flatMap { chatId ->
+            listOf(MediaFilter.VIDEO, MediaFilter.MUSIC).flatMap { filter ->
+                runCatching { app.repository.chatMedia(chatId, "", filter).items.take(6) }.getOrDefault(emptyList())
+            }
+        }.sortedByDescending { it.date }.take(24)
+    }
+    val visible = items.filter { it.chatId !in blocked }
+    if (visible.isEmpty()) return
+    Column(Modifier.padding(bottom = 8.dp)) {
+        Text("New in your channels", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            itemsIndexed(visible, key = { _, it -> "new-${it.id}" }) { index, item ->
+                FocusCard(onClick = { onPlay(visible, index) }, modifier = Modifier.width(220.dp)) {
+                    Column {
+                        TdImage(item.thumbFileId, item.minithumbnail, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+                        Text(
+                            item.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 6.dp),
+                        )
+                        Text(
+                            item.chatTitle,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
+                        )
+                    }
+                }
             }
         }
     }

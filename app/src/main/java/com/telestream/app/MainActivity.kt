@@ -128,6 +128,13 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         val chatId = intent?.getLongExtra(EXTRA_OPEN_CHAT, 0L) ?: 0L
         if (chatId != 0L) openChatRequest.value = chatId
+        // telestream://play?chat=..&msg=.. from the TV home screen's Play next row.
+        val data = intent?.data
+        if (data?.scheme == "telestream" && data.host == "play") {
+            val chat = data.getQueryParameter("chat")?.toLongOrNull()
+            val msg = data.getQueryParameter("msg")?.toLongOrNull()
+            if (chat != null && msg != null) RemoteServer.playRequest.value = com.telestream.app.remote.RemotePlay(chat, msg, 0L)
+        }
     }
 
     companion object {
@@ -219,6 +226,13 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
 
     LaunchedEffect(Unit) { app.sync.requestSync() }
 
+    // On Android TV, keep the home screen's Play next row in step with Continue watching.
+    if (LocalIsTv.current) {
+        LaunchedEffect(Unit) {
+            app.settings.continueWatching.collect { com.telestream.app.tv.WatchNext.sync(context, it) }
+        }
+    }
+
     // A phone remote asked this TV to play something.
     val remotePlay = RemoteServer.playRequest.value
     LaunchedEffect(remotePlay) {
@@ -245,9 +259,8 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
     val download: (MediaItem) -> Unit = { item ->
         scope.launch {
             try {
-                app.repository.startDownload(item)
-                app.settings.addDownload(SavedItem.of(item))
-                Toast.makeText(context, "Downloading \"${item.title}\". See the Downloads tab.", Toast.LENGTH_SHORT).show()
+                val message = com.telestream.app.data.DownloadPolicy.download(app, item)
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Toast.makeText(context, "Could not download: ${e.message}", Toast.LENGTH_LONG).show()
             }
@@ -310,6 +323,12 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                         onPlay = play,
                         onAddToList = { addToList = it },
                         onDownload = download,
+                        onPlayEpisodes = { episodes, index ->
+                            scope.launch {
+                                playback.playQueue(episodes, index)
+                                nav.navigate("player")
+                            }
+                        },
                     )
                 }
                 composable("list/{listId}") { entry ->

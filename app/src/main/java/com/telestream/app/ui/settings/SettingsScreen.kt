@@ -47,6 +47,7 @@ import com.telestream.app.update.UpdateChecker
 import android.os.Build
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 
 /** Lock icon in the header: unlocks locked chats with the PIN, or locks them again. */
 @Composable
@@ -205,6 +206,18 @@ fun SettingsScreen(onBack: () -> Unit, beforeSwitchAccount: () -> Unit, onOpenRe
                     Switch(checked = hideDuplicates, onCheckedChange = { scope.launch { app.settings.setHideDuplicates(it) } })
                 }
             }
+            item { Section("Playback") }
+            item { ToggleLine("Play the next episode automatically", app.settings.autoplayNext, true) { app.settings.setAutoplayNext(it) } }
+
+            item { Section("Subtitles") }
+            item { SubtitleSettings() }
+
+            item { Section("Downloads") }
+            item { DownloadSettings() }
+
+            item { Section("Backup") }
+            item { BackupSection() }
+
             item { Section("Info") }
             item { AboutSection() }
             item { Spacer(Modifier.padding(16.dp)) }
@@ -344,5 +357,134 @@ private fun InfoLine(label: String, value: String) {
     Row {
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 12.dp))
         Text(value)
+    }
+}
+
+@Composable
+private fun ToggleLine(label: String, flow: kotlinx.coroutines.flow.Flow<Boolean>, initial: Boolean, onChange: suspend (Boolean) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val value by flow.collectAsStateWithLifecycle(initialValue = initial)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f))
+        Switch(checked = value, onCheckedChange = { v -> scope.launch { onChange(v) } })
+    }
+}
+
+@Composable
+private fun SubtitleSettings() {
+    val app = TelestreamApp.instance
+    val scope = rememberCoroutineScope()
+    val savedKey by app.settings.openSubtitlesKey.collectAsStateWithLifecycle(initialValue = "")
+    val savedLanguages by app.settings.subtitleLanguages.collectAsStateWithLifecycle(initialValue = "en")
+    var key by remember(savedKey) { mutableStateOf(savedKey) }
+    var languages by remember(savedLanguages) { mutableStateOf(savedLanguages) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Hint(
+            "The Subtitles button in the player finds subtitles on OpenSubtitles.com. Create a free account there, " +
+                "add an API consumer to get a key, and paste it here. It stays on this device.",
+        )
+        OutlinedTextField(
+            value = key,
+            onValueChange = { key = it },
+            label = { Text("OpenSubtitles API key") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = languages,
+            onValueChange = { languages = it },
+            label = { Text("Languages, like en,ta,hi") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (key != savedKey || languages != savedLanguages) {
+            OutlinedButton(onClick = {
+                scope.launch {
+                    app.settings.setOpenSubtitlesKey(key)
+                    app.settings.setSubtitleLanguages(languages)
+                }
+            }) { Text("Save") }
+        }
+    }
+}
+
+@Composable
+private fun DownloadSettings() {
+    val app = TelestreamApp.instance
+    val scope = rememberCoroutineScope()
+    val limit by app.settings.downloadLimitGb.collectAsStateWithLifecycle(initialValue = 0)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        ToggleLine("Download only on Wi-Fi", app.settings.wifiOnlyDownloads, false) { app.settings.setWifiOnlyDownloads(it) }
+        ToggleLine("Delete downloaded videos after watching", app.settings.autoDeleteWatched, false) { app.settings.setAutoDeleteWatched(it) }
+        Text("Storage limit", style = MaterialTheme.typography.labelLarge)
+        androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(listOf(0, 5, 10, 20, 50)) { gb ->
+                androidx.compose.material3.FilterChip(
+                    selected = limit == gb,
+                    onClick = { scope.launch { app.settings.setDownloadLimitGb(gb) } },
+                    label = { Text(if (gb == 0) "No limit" else "$gb GB") },
+                )
+            }
+        }
+    }
+}
+
+/** Saves lists, hidden chats, Continue watching and followed channels to a file, and restores them. */
+@Composable
+private fun BackupSection() {
+    val app = TelestreamApp.instance
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf<String?>(null) }
+    val save = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            status = try {
+                val json = org.json.JSONObject()
+                    .put("telestreamBackup", 1)
+                    .put("data", org.json.JSONObject(app.sync.encode(app.settings.syncSnapshot())))
+                    .put("followed", org.json.JSONArray(app.settings.followedChats.first().toList()))
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { it.write(json.toString(2).toByteArray()) }
+                }
+                "Backup saved."
+            } catch (e: Exception) {
+                "Could not save: ${e.message}"
+            }
+        }
+    }
+    val restore = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            status = try {
+                val text = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
+                } ?: throw IllegalStateException("empty file")
+                val json = org.json.JSONObject(text)
+                val snapshot = app.sync.decode(json.getJSONObject("data").toString()) ?: throw IllegalStateException("not a Telestream backup")
+                // A new stamp makes the restored data win and sync to the other devices.
+                app.settings.applySnapshot(snapshot.copy(stamp = System.currentTimeMillis()))
+                json.optJSONArray("followed")?.let { arr ->
+                    for (i in 0 until arr.length()) app.settings.setChatFollowed(arr.getLong(i), true)
+                }
+                app.sync.requestSync()
+                "Restored ${snapshot.lists.size} lists."
+            } catch (e: Exception) {
+                "Could not restore: ${e.message}"
+            }
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Hint("Save your lists, hidden chats, Continue watching and followed channels to a file, or restore them. Restoring replaces your current lists.")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { runCatching { save.launch("telestream-backup.json") } }) { Text("Back up to file") }
+            OutlinedButton(onClick = { runCatching { restore.launch(arrayOf("application/json", "text/plain", "*/*")) } }) { Text("Restore") }
+        }
+        status?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
     }
 }

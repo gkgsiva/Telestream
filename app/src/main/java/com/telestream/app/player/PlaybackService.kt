@@ -20,6 +20,7 @@ import androidx.media3.session.MediaSession
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.guava.future
 import com.telestream.app.MainActivity
 import com.telestream.app.TelestreamApp
@@ -39,6 +40,7 @@ import kotlinx.coroutines.launch
 @OptIn(UnstableApi::class)
 class PlaybackService : MediaLibraryService() {
     private var session: MediaLibrarySession? = null
+    private var effects: MusicEffects? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -63,6 +65,22 @@ class PlaybackService : MediaLibraryService() {
             .build()
 
         player.addListener(ResumeTracker(player, app))
+
+        // A fixed audio session so the equalizer and volume effects can attach to it.
+        val audioSession = androidx.media3.common.util.Util.generateAudioSessionIdV21(this)
+        player.audioSessionId = audioSession
+        val fx = MusicEffects(audioSession)
+        effects = fx
+        scope.launch { app.settings.eqPreset.collect { fx.setPreset(it) } }
+        scope.launch { app.settings.steadyVolume.collect { fx.setSteady(it) } }
+        scope.launch {
+            app.settings.fadeSeconds.collectLatest { seconds ->
+                while (isActive) {
+                    fx.fade(player, seconds)
+                    delay(200)
+                }
+            }
+        }
         // So the phone remote and casting can find the player without a controller.
         current = player
 
@@ -94,6 +112,8 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         current = null
+        effects?.release()
+        effects = null
         scope.cancel()
         session?.run {
             player.release()
@@ -187,11 +207,23 @@ class PlaybackService : MediaLibraryService() {
         // be lost on the way. Items with only an id ("chatId:messageId") are loaded from Telegram.
         private suspend fun resolveAll(items: List<MediaItem>): List<MediaItem> = items.mapNotNull { item ->
             val uri = item.requestMetadata.mediaUri ?: item.localConfiguration?.uri
-            if (uri != null) return@mapNotNull item.buildUpon().setUri(uri).build()
+            if (uri != null) return@mapNotNull withSubtitle(item.buildUpon().setUri(uri), item).build()
             val id = item.mediaId.substringAfterLast('/')
             val chatId = id.substringBefore(':').toLongOrNull() ?: return@mapNotNull null
             val messageId = id.substringAfter(':').toLongOrNull() ?: return@mapNotNull null
             runCatching { app.repository.loadMessageMedia(chatId, messageId) }.getOrNull()?.toMedia3()
+        }
+
+        /** Subtitles downloaded in the app travel in requestMetadata extras, like the Uri. */
+        private fun withSubtitle(builder: MediaItem.Builder, item: MediaItem): MediaItem.Builder {
+            val extras = item.requestMetadata.extras ?: return builder
+            val path = extras.getString(EXTRA_SUBTITLE_PATH) ?: return builder
+            val subtitle = MediaItem.SubtitleConfiguration.Builder(android.net.Uri.fromFile(java.io.File(path)))
+                .setMimeType(extras.getString(EXTRA_SUBTITLE_MIME) ?: androidx.media3.common.MimeTypes.APPLICATION_SUBRIP)
+                .setLanguage(extras.getString(EXTRA_SUBTITLE_LANGUAGE))
+                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                .build()
+            return builder.setSubtitleConfigurations(listOf(subtitle))
         }
 
         private fun folder(id: String, title: String) = MediaItem.Builder()
@@ -210,6 +242,9 @@ class PlaybackService : MediaLibraryService() {
     companion object {
         private const val ROOT = "root"
         private const val LIST_PREFIX = "list:"
+        const val EXTRA_SUBTITLE_PATH = "subtitle_path"
+        const val EXTRA_SUBTITLE_MIME = "subtitle_mime"
+        const val EXTRA_SUBTITLE_LANGUAGE = "subtitle_language"
 
         /** The live player while the service runs. Main thread only. */
         @Volatile
@@ -225,6 +260,10 @@ class PlaybackService : MediaLibraryService() {
         scope.launch {
             if (saved != null && saved.kind == MediaKind.VIDEO) {
                 app.settings.recordProgress(saved, positionMs, durationMs.coerceAtLeast(0L))
+                if (durationMs > 0 && positionMs >= durationMs - durationMs / 20) {
+                    val fileId = item.requestMetadata.mediaUri?.lastPathSegment?.toIntOrNull()
+                    com.telestream.app.data.DownloadPolicy.onFinished(app, saved.id, fileId)
+                }
             } else {
                 app.settings.saveResumePosition(id, if (durationMs in 1..positionMs) 0L else positionMs)
             }
