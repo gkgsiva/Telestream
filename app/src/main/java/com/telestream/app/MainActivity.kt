@@ -50,6 +50,7 @@ import com.telestream.app.data.SavedItem
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
 import com.telestream.app.ui.player.rememberNowPlaying
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -78,6 +79,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Pick up lists and progress changed on the user's other devices.
+        (application as TelestreamApp).sync.requestSync()
     }
 
     override fun onDestroy() {
@@ -143,6 +150,20 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
     val fullScreen = route == "player"
     var addToList by remember { mutableStateOf<MediaItem?>(null) }
 
+    LaunchedEffect(Unit) { app.sync.requestSync() }
+
+    val download: (MediaItem) -> Unit = { item ->
+        scope.launch {
+            try {
+                app.repository.startDownload(item)
+                app.settings.addDownload(SavedItem.of(item))
+                Toast.makeText(context, "Downloading \"${item.title}\". See the Downloads tab.", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "Could not download: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     val play: (List<MediaItem>, Int) -> Unit = { items, index ->
         val item = items[index]
         scope.launch {
@@ -187,6 +208,7 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                         onOpenList = { nav.navigate("list/$it") },
                         onPlay = play,
                         onAddToList = { addToList = it },
+                        onDownload = download,
                         onLogOut = { scope.launch { player?.stop(); app.td.logOut() } },
                     )
                 }
@@ -196,6 +218,7 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                         onBack = { nav.popBackStack() },
                         onPlay = play,
                         onAddToList = { addToList = it },
+                        onDownload = download,
                     )
                 }
                 composable("list/{listId}") { entry ->
@@ -209,13 +232,13 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                     PlayerScreen(player, onClose = { nav.popBackStack() })
                 }
                 composable("nowplaying") {
-                    NowPlayingScreen(player, nowPlaying, onClose = { nav.popBackStack() })
+                    NowPlayingScreen(player, nowPlaying, playback.itemFor(nowPlaying.mediaId), onClose = { nav.popBackStack() })
                 }
             }
         }
         val p = player
         if (p != null && nowPlaying.hasMedia && !nowPlaying.isVideo && route != "player" && route != "nowplaying") {
-            MiniPlayer(p, nowPlaying, onOpen = openPlayer)
+            MiniPlayer(p, nowPlaying, playback.itemFor(nowPlaying.mediaId), onOpen = openPlayer)
         }
     }
 

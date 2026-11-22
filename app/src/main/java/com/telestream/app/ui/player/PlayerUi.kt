@@ -27,6 +27,10 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import com.telestream.app.ui.common.FocusCard
+import com.telestream.app.ui.common.TdImage
+import com.telestream.app.telegram.MediaItem as AppMediaItem
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import com.telestream.app.ui.common.LocalIsTv
 import com.telestream.app.ui.common.formatDuration
 import kotlinx.coroutines.delay
@@ -80,6 +84,10 @@ class NowPlaying {
         internal set
     var index by mutableStateOf(0)
         internal set
+    var mediaId by mutableStateOf<String?>(null)
+        internal set
+    var speed by mutableStateOf(1f)
+        internal set
     var queue by mutableStateOf<List<Pair<String, String>>>(emptyList())
         internal set
     var shuffle by mutableStateOf(false)
@@ -101,6 +109,8 @@ fun rememberNowPlaying(player: Player?): NowPlaying {
             state.hasMedia = player.mediaItemCount > 0 && player.playbackState != Player.STATE_IDLE
             state.isVideo = meta.mediaType == MediaMetadata.MEDIA_TYPE_VIDEO
             state.index = player.currentMediaItemIndex
+            state.mediaId = player.currentMediaItem?.mediaId
+            state.speed = player.playbackParameters.speed
             state.shuffle = player.shuffleModeEnabled
             state.repeatMode = player.repeatMode
             state.queue = (0 until player.mediaItemCount).map { i ->
@@ -167,14 +177,14 @@ fun PlayerScreen(player: Player?, onClose: () -> Unit) {
 
 /** Bar at the bottom of the app while music plays: title, previous, play/pause, next. */
 @Composable
-fun MiniPlayer(player: Player, state: NowPlaying, onOpen: () -> Unit, modifier: Modifier = Modifier) {
+fun MiniPlayer(player: Player, state: NowPlaying, art: AppMediaItem?, onOpen: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         onClick = onOpen,
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = modifier.fillMaxWidth(),
     ) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            CoverArt(art, Modifier.size(44.dp))
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(state.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (state.artist.isNotBlank()) {
@@ -203,7 +213,7 @@ fun MiniPlayer(player: Player, state: NowPlaying, onOpen: () -> Unit, modifier: 
 
 /** Music screen: track info, progress, previous/play/next, shuffle, repeat, and the queue. */
 @Composable
-fun NowPlayingScreen(player: Player?, state: NowPlaying, onClose: () -> Unit) {
+fun NowPlayingScreen(player: Player?, state: NowPlaying, art: AppMediaItem?, onClose: () -> Unit) {
     if (player == null) return
     val isTv = LocalIsTv.current
     var position by remember { mutableLongStateOf(0L) }
@@ -232,12 +242,7 @@ fun NowPlayingScreen(player: Player?, state: NowPlaying, onClose: () -> Unit) {
         }
         item {
             Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    Icons.Default.MusicNote,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(if (isTv) 96.dp else 120.dp),
-                )
+                CoverArt(art, Modifier.size(if (isTv) 200.dp else 240.dp))
                 Text(
                     state.title,
                     style = MaterialTheme.typography.headlineSmall,
@@ -286,6 +291,11 @@ fun NowPlayingScreen(player: Player?, state: NowPlaying, onClose: () -> Unit) {
                     IconButton(onClick = { player.seekToNext() }) {
                         Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(36.dp))
                     }
+                    TextButton(onClick = {
+                        val speeds = listOf(1f, 1.25f, 1.5f, 2f, 0.75f)
+                        val next = speeds[(speeds.indexOfFirst { it == state.speed } + 1).mod(speeds.size)]
+                        player.setPlaybackSpeed(next)
+                    }) { Text(formatSpeed(state.speed)) }
                     IconButton(onClick = {
                         player.repeatMode = when (state.repeatMode) {
                             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
@@ -350,3 +360,18 @@ fun NowPlayingScreen(player: Player?, state: NowPlaying, onClose: () -> Unit) {
 }
 
 private fun formatMs(ms: Long): String = formatDuration((ms / 1000).toInt())
+
+private fun formatSpeed(speed: Float): String =
+    if (speed == speed.toInt().toFloat()) "${speed.toInt()}x" else "${speed}x"
+
+/** Album cover or video thumbnail, with a music note when there is none. */
+@Composable
+private fun CoverArt(item: AppMediaItem?, modifier: Modifier) {
+    Box(modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+        if (item != null && (item.thumbFileId != null || item.minithumbnail != null)) {
+            TdImage(item.thumbFileId, item.minithumbnail, Modifier.fillMaxSize())
+        } else {
+            Icon(Icons.Default.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.fillMaxSize(0.5f))
+        }
+    }
+}

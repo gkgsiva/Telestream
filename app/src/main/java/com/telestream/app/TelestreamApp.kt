@@ -2,6 +2,7 @@ package com.telestream.app
 
 import android.app.Application
 import com.telestream.app.data.Settings
+import com.telestream.app.data.SyncManager
 import com.telestream.app.telegram.TdClient
 import com.telestream.app.telegram.TelegramRepository
 
@@ -13,6 +14,8 @@ class TelestreamApp : Application() {
         private set
     lateinit var repository: TelegramRepository
         private set
+    lateinit var sync: SyncManager
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -20,6 +23,7 @@ class TelestreamApp : Application() {
         settings = Settings(this)
         td = TdClient(this, settings)
         repository = TelegramRepository(td)
+        sync = SyncManager(this, td, settings)
     }
 
     companion object {

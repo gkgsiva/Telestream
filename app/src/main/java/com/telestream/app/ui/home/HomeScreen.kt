@@ -1,5 +1,21 @@
 package com.telestream.app.ui.home
 
+import android.app.Activity
+import android.content.Intent
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
+import com.telestream.app.ui.common.FocusCard
+import com.telestream.app.ui.downloads.DownloadsTab
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -69,6 +85,7 @@ fun HomeScreen(
     onOpenList: (String) -> Unit,
     onPlay: (List<MediaItem>, Int) -> Unit,
     onAddToList: (MediaItem) -> Unit,
+    onDownload: (MediaItem) -> Unit,
     onLogOut: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -80,23 +97,31 @@ fun HomeScreen(
         ) {
             Text("Telestream", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.weight(1f))
+            val syncStatus by TelestreamApp.instance.sync.status.collectAsStateWithLifecycle()
+            syncStatus?.let {
+                TextButton(onClick = { TelestreamApp.instance.sync.requestSync() }) {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             TextButton(onClick = onLogOut) { Text("Log out") }
         }
         TabRow(selectedTabIndex = tab) {
             Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("My chats") })
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Search") })
             Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("My lists") })
+            Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("Downloads") })
         }
         when (tab) {
-            0 -> ChatsTab(onOpenChat)
-            1 -> SearchTab(onOpenChat, onPlay, onAddToList)
-            else -> ListsTab(onOpenList)
+            0 -> ChatsTab(onOpenChat, onPlay)
+            1 -> SearchTab(onOpenChat, onPlay, onAddToList, onDownload)
+            2 -> ListsTab(onOpenList)
+            else -> DownloadsTab(onPlay)
         }
     }
 }
 
 @Composable
-private fun ChatsTab(onOpenChat: (Long) -> Unit) {
+private fun ChatsTab(onOpenChat: (Long) -> Unit, onPlay: (List<MediaItem>, Int) -> Unit) {
     val app = TelestreamApp.instance
     val vm: ChatsViewModel = viewModel { ChatsViewModel(app.repository, app.settings) }
     val hidden by vm.hidden.collectAsStateWithLifecycle()
@@ -115,6 +140,7 @@ private fun ChatsTab(onOpenChat: (Long) -> Unit) {
             contentPadding = PaddingValues(horizontal = if (isTv) 48.dp else 12.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            item { ContinueWatchingRow(onPlay) }
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -157,6 +183,7 @@ private fun SearchTab(
     onOpenChat: (Long) -> Unit,
     onPlay: (List<MediaItem>, Int) -> Unit,
     onAddToList: (MediaItem) -> Unit,
+    onDownload: (MediaItem) -> Unit,
 ) {
     val app = TelestreamApp.instance
     val vm: SearchViewModel = viewModel { SearchViewModel(app.repository, app.settings) }
@@ -164,6 +191,17 @@ private fun SearchTab(
     val keyboard = LocalSoftwareKeyboardController.current
     val isTv = LocalIsTv.current
     val side = if (isTv) 48.dp else 12.dp
+    val context = LocalContext.current
+    val voiceIntent = remember {
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a movie, song or channel")
+    }
+    val canVoice = remember { voiceIntent.resolveActivity(context.packageManager) != null }
+    val voice = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val text = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+        if (result.resultCode == Activity.RESULT_OK && !text.isNullOrBlank()) vm.search(text)
+    }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -179,14 +217,30 @@ private fun SearchTab(
                 },
                 singleLine = true,
                 trailingIcon = {
-                    IconButton(onClick = { keyboard?.hide(); vm.search() }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search")
+                    Row {
+                        if (canVoice) {
+                            IconButton(onClick = { runCatching { voice.launch(voiceIntent) } }) {
+                                Icon(Icons.Default.Mic, contentDescription = "Voice search")
+                            }
+                        }
+                        IconButton(onClick = { keyboard?.hide(); vm.search() }) {
+                            Icon(Icons.Default.Search, contentDescription = "Search")
+                        }
                     }
                 },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { keyboard?.hide(); vm.search() }),
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+        if (isTv && canVoice) {
+            item {
+                OutlinedButton(onClick = { runCatching { voice.launch(voiceIntent) } }) {
+                    Icon(Icons.Default.Mic, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Search by voice")
+                }
+            }
         }
         item {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -234,7 +288,12 @@ private fun SearchTab(
             }
         } else {
             itemsIndexed(vm.results, key = { _, item -> item.id }) { index, item ->
-                MediaRow(item, onClick = { onPlay(vm.results.toList(), index) }, onAddToList = { onAddToList(item) })
+                MediaRow(
+                    item,
+                    onClick = { onPlay(vm.results.toList(), index) },
+                    onAddToList = { onAddToList(item) },
+                    onDownload = { onDownload(item) },
+                )
             }
             if (vm.searched && !vm.endReached) {
                 item(key = "more-${vm.pagesLoaded}") {
@@ -280,6 +339,51 @@ private fun InviteCard(preview: InvitePreview, message: String?, onJoin: () -> U
             }
             if (message != null) {
                 Text(message, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+    }
+}
+
+/** Videos the user started, newest first, with how far they got. */
+@Composable
+private fun ContinueWatchingRow(onPlay: (List<MediaItem>, Int) -> Unit) {
+    val app = TelestreamApp.instance
+    val entries by app.settings.continueWatching.collectAsStateWithLifecycle(initialValue = emptyList())
+    val scope = rememberCoroutineScope()
+    if (entries.isEmpty()) return
+    Column(Modifier.padding(bottom = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Continue watching", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = { scope.launch { app.settings.clearContinue() } }) { Text("Clear") }
+        }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(entries, key = { it.item.id }) { entry ->
+                var media by remember(entry.item.id) { mutableStateOf<MediaItem?>(null) }
+                LaunchedEffect(entry.item.id) {
+                    media = runCatching { app.repository.loadMessageMedia(entry.item.chatId, entry.item.messageId) }.getOrNull()
+                }
+                FocusCard(
+                    onClick = { media?.let { onPlay(listOf(it), 0) } },
+                    modifier = Modifier.width(220.dp),
+                ) {
+                    Column {
+                        TdImage(media?.thumbFileId, media?.minithumbnail, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+                        if (entry.durationMs > 0) {
+                            LinearProgressIndicator(
+                                progress = { (entry.positionMs.toFloat() / entry.durationMs).coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        Text(
+                            entry.item.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        )
+                    }
+                }
             }
         }
     }

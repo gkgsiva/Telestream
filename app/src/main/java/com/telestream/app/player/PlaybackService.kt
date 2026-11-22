@@ -17,6 +17,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.telestream.app.MainActivity
 import com.telestream.app.TelestreamApp
+import com.telestream.app.telegram.MediaKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -72,8 +73,7 @@ class PlaybackService : MediaSessionService() {
             while (isActive) {
                 delay(5_000)
                 val p = session?.player ?: continue
-                val id = p.currentMediaItem?.mediaId
-                if (p.isPlaying && !id.isNullOrEmpty()) app.settings.saveResumePosition(id, p.currentPosition)
+                if (p.isPlaying) saveProgress(app, p.currentMediaItem, p.currentPosition, p.duration)
             }
         }
     }
@@ -111,13 +111,25 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** Clears the saved position when an item plays to the end, and saves it on pause. */
+    private fun saveProgress(app: TelestreamApp, item: MediaItem?, positionMs: Long, durationMs: Long) {
+        if (item == null) return
+        val id = item.mediaId
+        if (id.isEmpty()) return
+        val saved = item.toSavedItem()
+        scope.launch {
+            if (saved != null && saved.kind == MediaKind.VIDEO) {
+                app.settings.recordProgress(saved, positionMs, durationMs.coerceAtLeast(0L))
+            } else {
+                app.settings.saveResumePosition(id, if (durationMs in 1..positionMs) 0L else positionMs)
+            }
+        }
+    }
+
+    /** Saves progress on pause, and marks an item finished when it plays to the end. */
     private inner class ResumeTracker(private val player: Player, private val app: TelestreamApp) : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            val id = player.currentMediaItem?.mediaId
-            if (!isPlaying && !id.isNullOrEmpty() && player.playbackState != Player.STATE_ENDED) {
-                val pos = player.currentPosition
-                scope.launch { app.settings.saveResumePosition(id, pos) }
+            if (!isPlaying && player.playbackState != Player.STATE_ENDED) {
+                saveProgress(app, player.currentMediaItem, player.currentPosition, player.duration)
             }
         }
 
@@ -127,15 +139,14 @@ class PlaybackService : MediaSessionService() {
             reason: Int,
         ) {
             if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
-                val id = oldPosition.mediaItem?.mediaId
-                if (!id.isNullOrEmpty()) scope.launch { app.settings.saveResumePosition(id, 0) }
+                val item = oldPosition.mediaItem
+                saveProgress(app, item, Long.MAX_VALUE / 2, Long.MAX_VALUE / 2)
             }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
-            val id = player.currentMediaItem?.mediaId
-            if (playbackState == Player.STATE_ENDED && !id.isNullOrEmpty()) {
-                scope.launch { app.settings.saveResumePosition(id, 0) }
+            if (playbackState == Player.STATE_ENDED) {
+                saveProgress(app, player.currentMediaItem, Long.MAX_VALUE / 2, Long.MAX_VALUE / 2)
             }
         }
     }

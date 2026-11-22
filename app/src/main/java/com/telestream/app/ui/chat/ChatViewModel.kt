@@ -10,6 +10,9 @@ import androidx.lifecycle.viewModelScope
 import com.telestream.app.telegram.ChatSummary
 import com.telestream.app.telegram.MediaFilter
 import com.telestream.app.telegram.MediaItem
+import com.telestream.app.telegram.MediaKind
+import com.telestream.app.telegram.SeriesParser
+import com.telestream.app.telegram.Show
 import com.telestream.app.telegram.TelegramRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -38,6 +41,17 @@ class ChatViewModel(private val repo: TelegramRepository, val chatId: Long) : Vi
     var joining by mutableStateOf(false)
         private set
 
+    /** Series view: every video in the chat grouped by show and season. */
+    var seriesMode by mutableStateOf(false)
+        private set
+    var shows by mutableStateOf<List<Show>>(emptyList())
+        private set
+    var seriesLoading by mutableStateOf(false)
+        private set
+    var seriesScanned by mutableIntStateOf(0)
+        private set
+    private var seriesJob: Job? = null
+
     private var next: Long? = 0L
     private var job: Job? = null
     private var generation = 0
@@ -53,9 +67,40 @@ class ChatViewModel(private val repo: TelegramRepository, val chatId: Long) : Vi
     }
 
     fun selectFilter(value: MediaFilter) {
-        if (value == filter) return
+        val wasSeries = seriesMode
+        seriesMode = false
+        if (value == filter && !wasSeries) return
         filter = value
         reload()
+    }
+
+    /** Loads up to [SERIES_LIMIT] videos and video files and groups them into shows. */
+    fun showSeries() {
+        seriesMode = true
+        if (seriesJob?.isActive == true || shows.isNotEmpty()) return
+        seriesLoading = true
+        seriesScanned = 0
+        seriesJob = viewModelScope.launch {
+            val all = mutableListOf<MediaItem>()
+            try {
+                for (f in listOf(MediaFilter.VIDEO, MediaFilter.FILES)) {
+                    var from: Long? = 0L
+                    while (from != null && all.size < SERIES_LIMIT) {
+                        val page = repo.chatMedia(chatId, "", f, from)
+                        all += page.items.filter { it.kind == MediaKind.VIDEO }
+                        seriesScanned = all.size
+                        from = page.next
+                        shows = SeriesParser.group(all)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = e.message
+            } finally {
+                seriesLoading = false
+            }
+        }
     }
 
     fun search() = reload()
@@ -116,5 +161,9 @@ class ChatViewModel(private val repo: TelegramRepository, val chatId: Long) : Vi
                 }
             }
         }
+    }
+
+    companion object {
+        const val SERIES_LIMIT = 2000
     }
 }

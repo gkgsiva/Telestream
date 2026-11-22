@@ -70,6 +70,23 @@ class TelegramRepository(private val td: TdClient) {
         }
     }
 
+    /** Starts a full download for offline playback; progress arrives as file updates. */
+    suspend fun startDownload(item: MediaItem) {
+        td.send(TdApi.AddFileToDownloads(item.fileId, item.chatId, item.messageId, 1))
+    }
+
+    suspend fun pauseDownload(fileId: Int, paused: Boolean) {
+        td.send(TdApi.ToggleDownloadIsPaused(fileId, paused))
+    }
+
+    /** Removes an offline copy from the device. */
+    suspend fun deleteDownload(fileId: Int) {
+        runCatching { td.send(TdApi.RemoveFileFromDownloads(fileId, true)) }
+        runCatching { td.send(TdApi.DeleteFile(fileId)) }
+    }
+
+    suspend fun fileState(fileId: Int): TdApi.File = td.send(TdApi.GetFile(fileId))
+
     /** Loads a saved list item again so it gets a fresh file id. */
     suspend fun loadMessageMedia(chatId: Long, messageId: Long): MediaItem? {
         val message = td.send(TdApi.GetMessage(chatId, messageId))

@@ -12,15 +12,30 @@ android {
         applicationId = "com.telestream.app"
         minSdk = 23
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI sets these from the run number and the release tag (v1.2.3 -> 1.2.3).
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionName = System.getenv("TELESTREAM_VERSION_NAME") ?: "0.1.0"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
     }
 
+    // Release signing comes from environment variables, so the keystore never lives in the repo.
+    val keystorePath = System.getenv("TELESTREAM_KEYSTORE_PATH")
+    signingConfigs {
+        if (keystorePath != null) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("TELESTREAM_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("TELESTREAM_KEY_ALIAS")
+                keyPassword = System.getenv("TELESTREAM_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (keystorePath != null) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }

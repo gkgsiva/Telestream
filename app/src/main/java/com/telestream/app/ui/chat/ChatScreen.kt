@@ -10,6 +10,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.FilterChip
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -49,6 +54,7 @@ fun ChatScreen(
     onBack: () -> Unit,
     onPlay: (List<MediaItem>, Int) -> Unit,
     onAddToList: (MediaItem) -> Unit,
+    onDownload: (MediaItem) -> Unit,
 ) {
     val app = TelestreamApp.instance
     val vm: ChatViewModel = viewModel(key = "chat-$chatId") { ChatViewModel(app.repository, chatId) }
@@ -77,12 +83,15 @@ fun ChatScreen(
         vm.joinMessage?.let { msg ->
             Text(msg, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(horizontal = side, vertical = 4.dp))
         }
-        TabRow(selectedTabIndex = vm.filter.ordinal) {
+        TabRow(selectedTabIndex = if (vm.seriesMode) MediaFilter.entries.size else vm.filter.ordinal) {
             MediaFilter.entries.forEach { f ->
-                Tab(selected = vm.filter == f, onClick = { vm.selectFilter(f) }, text = { Text(f.label) })
+                Tab(selected = !vm.seriesMode && vm.filter == f, onClick = { vm.selectFilter(f) }, text = { Text(f.label) })
             }
+            Tab(selected = vm.seriesMode, onClick = { vm.showSeries() }, text = { Text("Series") })
         }
-        LazyColumn(
+        if (vm.seriesMode) {
+            SeriesList(vm, side, onPlay, onAddToList, onDownload)
+        } else LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = side, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -105,7 +114,12 @@ fun ChatScreen(
             }
             vm.error?.let { err -> item { Text(err, color = MaterialTheme.colorScheme.error) } }
             itemsIndexed(vm.items, key = { _, item -> item.id }) { index, item ->
-                MediaRow(item, onClick = { onPlay(vm.items.toList(), index) }, onAddToList = { onAddToList(item) })
+                MediaRow(
+                    item,
+                    onClick = { onPlay(vm.items.toList(), index) },
+                    onAddToList = { onAddToList(item) },
+                    onDownload = { onDownload(item) },
+                )
             }
             if (!vm.endReached) {
                 item(key = "more-${vm.pagesLoaded}") {
@@ -120,6 +134,77 @@ fun ChatScreen(
                             MediaFilter.MUSIC -> "No music here."
                             MediaFilter.FILES -> "No video or audio files here."
                         }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeriesList(
+    vm: ChatViewModel,
+    side: androidx.compose.ui.unit.Dp,
+    onPlay: (List<MediaItem>, Int) -> Unit,
+    onAddToList: (MediaItem) -> Unit,
+    onDownload: (MediaItem) -> Unit,
+) {
+    // Selected season per show name.
+    val selected = remember { mutableStateMapOf<String, Int>() }
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = side, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (vm.seriesLoading) {
+            item {
+                Text(
+                    "Scanning videos… ${vm.seriesScanned} so far",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (!vm.seriesLoading && vm.shows.isEmpty()) {
+            item { CenteredMessage("No episode names like S01E02 found in this chat.") }
+        }
+        vm.shows.forEach { show ->
+            val seasons = show.seasons.keys.toList()
+            val season = selected[show.name]?.takeIf { it in show.seasons } ?: seasons.first()
+            val episodes = show.seasons[season].orEmpty()
+            item(key = "show-${show.name}") {
+                Column(Modifier.padding(top = 12.dp)) {
+                    Text(show.name, style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "${seasons.size} season${if (seasons.size == 1) "" else "s"} · ${show.seasons.values.sumOf { it.size }} episodes",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (seasons.size > 1) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                            items(seasons) { n ->
+                                FilterChip(
+                                    selected = n == season,
+                                    onClick = { selected[show.name] = n },
+                                    label = { Text("Season $n") },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            itemsIndexed(episodes, key = { _, e -> "ep-${show.name}-${e.second.id}" }) { index, (number, item) ->
+                Column {
+                    Text(
+                        "S${season}·E$number",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                    )
+                    MediaRow(
+                        item,
+                        onClick = { onPlay(episodes.map { it.second }, index) },
+                        onAddToList = { onAddToList(item) },
+                        onDownload = { onDownload(item) },
                     )
                 }
             }

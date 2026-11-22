@@ -5,7 +5,7 @@ One APK runs on both. It signs into your own Telegram account through
 [TDLib](https://github.com/tdlib/td) and plays files directly from Telegram, downloading only the
 part you are watching. There is no server.
 
-## What works in this first version
+## Features
 
 - **Login:** enter your own Telegram API ID and hash (from [my.telegram.org](https://my.telegram.org)),
   then log in with a QR code (default on TV) or phone number and code (default on phones), including
@@ -24,7 +24,18 @@ part you are watching. There is no server.
   shuffle, reorder or remove items under the My lists tab.
 - **Music:** plays as a queue in a background service with notification and lock-screen controls,
   plus a mini player (previous, play/pause, next) and a Now playing screen with progress,
-  shuffle, repeat and the queue.
+  shuffle, repeat, playback speed and the queue, with cover art.
+- **Continue watching:** a row at the top of My chats with progress bars; finished videos drop off.
+- **Subtitles, audio tracks and speed:** from the player controls (subtitle button and settings gear).
+- **Downloads:** the download button next to any item saves it for offline use; the Downloads tab
+  shows progress and lets you pause, resume, play or delete.
+- **Series:** the Series tab on a channel groups episodes named like `S01E02`, `1x03`,
+  `Season 2 Episode 5` or `EP 12` into shows and seasons.
+- **Thumbnails:** video thumbnails, channel photos and album art throughout.
+- **Voice search:** the mic in the search field, or "Search by voice" on Android TV.
+- **Sync between phone and TV:** lists, hidden chats and Continue watching are kept in a
+  `telestream-sync.json` file in your Telegram Saved Messages. Log in with the same account on both
+  devices and they stay in step. Tap the sync status at the top to sync now.
 
 ## Getting an APK
 
@@ -38,6 +49,18 @@ adb install -r app-debug.apk
 ```
 
 On Android TV you can also install it with a file manager or "Send files to TV".
+
+## Signed releases
+
+Pushing a tag like `v0.2.0` builds a signed release APK and attaches it to a GitHub Release.
+It needs four repository secrets (Settings, Secrets and variables, Actions):
+`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS` and `KEY_PASSWORD`. Create a keystore once
+and keep a backup, because updates must be signed with the same key:
+
+```
+keytool -genkeypair -v -keystore telestream.jks -alias telestream -keyalg RSA -keysize 4096 -validity 10000
+base64 -w0 telestream.jks   # paste the output into KEYSTORE_BASE64
+```
 
 ## Building locally
 

@@ -27,7 +27,59 @@ data class SavedItem(
 /** A user-made list of videos and music. */
 data class UserList(val id: String, val name: String, val items: List<SavedItem>)
 
+/** A video the user started, for the Continue watching row and cross-device resume. */
+data class ResumeEntry(val item: SavedItem, val positionMs: Long, val durationMs: Long, val updatedAt: Long)
+
 internal object ListsJson {
+    fun itemToJson(i: SavedItem): JSONObject = JSONObject()
+        .put("chatId", i.chatId)
+        .put("messageId", i.messageId)
+        .put("kind", i.kind.name)
+        .put("title", i.title)
+        .put("subtitle", i.subtitle)
+        .put("chatTitle", i.chatTitle)
+        .put("duration", i.durationSec)
+
+    fun itemFromJson(i: JSONObject) = SavedItem(
+        chatId = i.getLong("chatId"),
+        messageId = i.getLong("messageId"),
+        kind = runCatching { MediaKind.valueOf(i.getString("kind")) }.getOrDefault(MediaKind.VIDEO),
+        title = i.optString("title"),
+        subtitle = i.optString("subtitle"),
+        chatTitle = i.optString("chatTitle"),
+        durationSec = i.optInt("duration"),
+    )
+
+    fun encodeItems(items: List<SavedItem>): String = JSONArray().apply { items.forEach { put(itemToJson(it)) } }.toString()
+
+    fun decodeItems(text: String?): List<SavedItem> = try {
+        val arr = JSONArray(text ?: "[]")
+        (0 until arr.length()).map { itemFromJson(arr.getJSONObject(it)) }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    fun encodeResume(entries: List<ResumeEntry>): String = JSONArray().apply {
+        entries.forEach {
+            put(
+                itemToJson(it.item)
+                    .put("position", it.positionMs)
+                    .put("durationMs", it.durationMs)
+                    .put("updatedAt", it.updatedAt)
+            )
+        }
+    }.toString()
+
+    fun decodeResume(text: String?): List<ResumeEntry> = try {
+        val arr = JSONArray(text ?: "[]")
+        (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            ResumeEntry(itemFromJson(o), o.optLong("position"), o.optLong("durationMs"), o.optLong("updatedAt"))
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
     fun encode(lists: List<UserList>): String = JSONArray().apply {
         lists.forEach { list ->
             put(

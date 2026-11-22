@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -104,6 +105,7 @@ fun MediaRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onAddToList: (() -> Unit)? = null,
+    onDownload: (() -> Unit)? = null,
 ) {
     val isTv = LocalIsTv.current
     FocusCard(onClick = onClick, modifier = modifier.fillMaxWidth()) {
@@ -150,6 +152,11 @@ fun MediaRow(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+            }
+            if (onDownload != null) {
+                IconButton(onClick = onDownload) {
+                    Icon(Icons.Default.Download, contentDescription = "Download for offline")
                 }
             }
             if (onAddToList != null) {
