@@ -1,0 +1,139 @@
+name: Android
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tdlib:
+    name: TDLib (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned TDLib commit
+        id: pin
+        run: echo "commit=$(cat scripts/tdlib-commit.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore TDLib build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: tdlib-out
+          key: tdlib-${{ steps.pin.outputs.commit }}-${{ matrix.abi }}-api21-v1
+
+      - name: Install build tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y gperf php-cli
+
+      - uses: actions/setup-java@v4
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build TDLib
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: scripts/build-tdlib.sh "${{ matrix.abi }}" tdlib-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tdlib-${{ matrix.abi }}
+          path: tdlib-out
+          retention-days: 7
+
+  apk:
+    name: Build APK
+    needs: tdlib
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tdlib-*
+          merge-multiple: true
+          path: tdlib-out
+
+      - name: Install TDLib into the project
+        run: scripts/install-tdlib.sh tdlib-out
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      # Unsigned here; it checks that the minified release build still works before a tag.
+      - name: Check release build
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: telestream-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+
+  release:
+    name: Signed release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: tdlib
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tdlib-*
+          merge-multiple: true
+          path: tdlib-out
+
+      - name: Install TDLib into the project
+        run: scripts/install-tdlib.sh tdlib-out
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Add the KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS and KEY_PASSWORD repository secrets first."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Build signed release APK
+        env:
+          TELESTREAM_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          TELESTREAM_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          TELESTREAM_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          TELESTREAM_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          export TELESTREAM_VERSION_NAME="${GITHUB_REF_NAME#v}"
+          ./gradlew --no-daemon :app:assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "telestream-${GITHUB_REF_NAME}.apk"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: telestream-*.apk
+          generate_release_notes: true
