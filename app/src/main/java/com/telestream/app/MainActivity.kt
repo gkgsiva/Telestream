@@ -31,6 +31,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.telestream.app.stream.ExternalPlayer
 import com.telestream.app.player.Playback
 import com.telestream.app.telegram.MediaItem
 import com.telestream.app.telegram.MediaKind
@@ -229,7 +230,19 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                     )
                 }
                 composable("player") {
-                    PlayerScreen(player, onClose = { nav.popBackStack() })
+                    val vlcContext = LocalContext.current
+                    val current = playback.itemFor(nowPlaying.mediaId)
+                    PlayerScreen(
+                        player,
+                        onClose = { nav.popBackStack() },
+                        onOpenInVlc = current?.let { item ->
+                            {
+                                val position = player?.currentPosition ?: 0L
+                                player?.pause()
+                                ExternalPlayer.openInVlc(vlcContext, item, position)
+                            }
+                        },
+                    )
                 }
                 composable("nowplaying") {
                     NowPlayingScreen(player, nowPlaying, playback.itemFor(nowPlaying.mediaId), onClose = { nav.popBackStack() })

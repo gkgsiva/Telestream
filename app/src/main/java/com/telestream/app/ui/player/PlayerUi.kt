@@ -131,7 +131,7 @@ fun rememberNowPlaying(player: Player?): NowPlaying {
 /** Full-screen player for video (and for music, showing the standard controls). */
 @OptIn(UnstableApi::class)
 @Composable
-fun PlayerScreen(player: Player?, onClose: () -> Unit) {
+fun PlayerScreen(player: Player?, onClose: () -> Unit, onOpenInVlc: (() -> Unit)? = null) {
     val context = LocalContext.current
     DisposableEffect(Unit) {
         val window = (context as? Activity)?.window
@@ -171,6 +171,11 @@ fun PlayerScreen(player: Player?, onClose: () -> Unit) {
         }
         TextButton(onClick = onClose, modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
             Text("Close", color = Color.White)
+        }
+        if (onOpenInVlc != null) {
+            TextButton(onClick = onOpenInVlc, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
+                Text("Open in VLC", color = Color.White)
+            }
         }
     }
 }

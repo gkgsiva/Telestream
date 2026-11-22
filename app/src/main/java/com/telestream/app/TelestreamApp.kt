@@ -17,6 +17,9 @@ class TelestreamApp : Application() {
     lateinit var sync: SyncManager
         private set
 
+    /** Serves Telegram files over 127.0.0.1 for external players such as VLC. */
+    val streamServer by lazy { com.telestream.app.stream.LocalStreamServer(td) }
+
     override fun onCreate() {
         super.onCreate()
         instance = this

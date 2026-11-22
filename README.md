@@ -32,6 +32,9 @@ part you are watching. There is no server.
 - **Series:** the Series tab on a channel groups episodes named like `S01E02`, `1x03`,
   `Season 2 Episode 5` or `EP 12` into shows and seasons.
 - **Thumbnails:** video thumbnails, channel photos and album art throughout.
+- **Open in VLC:** the button at the top right of the video player hands the stream to the VLC app,
+  starting where you were. Telestream serves the file from Telegram over a private local address
+  while VLC plays, so nothing is downloaded first. Without VLC you can pick another player.
 - **Voice search:** the mic in the search field, or "Search by voice" on Android TV.
 - **Sync between phone and TV:** lists, hidden chats and Continue watching are kept in a
   `telestream-sync.json` file in your Telegram Saved Messages. Log in with the same account on both
