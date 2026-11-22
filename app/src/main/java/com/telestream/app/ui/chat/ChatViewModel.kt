@@ -41,7 +41,7 @@ class ChatViewModel(private val repo: TelegramRepository, val chatId: Long) : Vi
         reload()
     }
 
-    fun setFilter(value: MediaFilter) {
+    fun selectFilter(value: MediaFilter) {
         if (value == filter) return
         filter = value
         reload()

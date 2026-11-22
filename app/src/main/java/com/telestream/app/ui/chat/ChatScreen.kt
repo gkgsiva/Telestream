@@ -67,7 +67,7 @@ fun ChatScreen(chatId: Long, onBack: () -> Unit, onPlay: (List<MediaItem>, Int) 
         }
         TabRow(selectedTabIndex = vm.filter.ordinal) {
             MediaFilter.entries.forEach { f ->
-                Tab(selected = vm.filter == f, onClick = { vm.setFilter(f) }, text = { Text(f.label) })
+                Tab(selected = vm.filter == f, onClick = { vm.selectFilter(f) }, text = { Text(f.label) })
             }
         }
         LazyColumn(

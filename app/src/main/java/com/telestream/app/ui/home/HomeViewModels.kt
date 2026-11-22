@@ -84,12 +84,12 @@ class SearchViewModel(private val repo: TelegramRepository, private val settings
 
     val endReached: Boolean get() = next == null
 
-    fun setScope(value: SearchScope) {
+    fun selectScope(value: SearchScope) {
         scope = value
         if (searched) search()
     }
 
-    fun setFilter(value: MediaFilter) {
+    fun selectFilter(value: MediaFilter) {
         filter = value
         if (searched && scope == SearchScope.MY_CHATS) search()
     }

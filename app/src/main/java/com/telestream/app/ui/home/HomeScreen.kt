@@ -147,12 +147,12 @@ private fun SearchTab(onOpenChat: (Long) -> Unit, onPlay: (List<MediaItem>, Int)
         item {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(SearchScope.entries) { s ->
-                    FilterChip(selected = vm.scope == s, onClick = { vm.setScope(s) }, label = { Text(s.label) })
+                    FilterChip(selected = vm.scope == s, onClick = { vm.selectScope(s) }, label = { Text(s.label) })
                 }
                 if (vm.scope == SearchScope.MY_CHATS) {
                     item { Spacer(Modifier.width(16.dp)) }
                     items(MediaFilter.entries) { f ->
-                        FilterChip(selected = vm.filter == f, onClick = { vm.setFilter(f) }, label = { Text(f.label) })
+                        FilterChip(selected = vm.filter == f, onClick = { vm.selectFilter(f) }, label = { Text(f.label) })
                     }
                 }
             }
