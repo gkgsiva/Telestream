@@ -1,7 +1,7 @@
 package com.telestream.app.ui.player
 
 import android.app.Activity
-import android.view.View
+import android.view.ViewGroup
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -108,7 +108,7 @@ fun PlayerScreen(player: Player?, onClose: () -> Unit) {
                         keepScreenOn = true
                         isFocusable = true
                         isFocusableInTouchMode = true
-                        descendantFocusability = View.FOCUS_AFTER_DESCENDANTS
+                        descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
                         requestFocus()
                     }
                 },
