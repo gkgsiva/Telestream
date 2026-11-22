@@ -42,7 +42,14 @@ import com.telestream.app.ui.common.Loading
 import com.telestream.app.ui.common.TelestreamTheme
 import com.telestream.app.ui.home.HomeScreen
 import com.telestream.app.ui.player.MiniPlayer
+import com.telestream.app.ui.player.NowPlayingScreen
 import com.telestream.app.ui.player.PlayerScreen
+import com.telestream.app.ui.lists.AddToListDialog
+import com.telestream.app.ui.lists.ListScreen
+import com.telestream.app.data.SavedItem
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.remember
 import com.telestream.app.ui.player.rememberNowPlaying
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -128,10 +135,13 @@ private fun AppRoot(app: TelestreamApp, playback: Playback) {
 private fun MainNav(app: TelestreamApp, playback: Playback) {
     val nav = rememberNavController()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val player by produceState<Player?>(null) { value = playback.controller() }
     val nowPlaying = rememberNowPlaying(player)
     val backStack by nav.currentBackStackEntryAsState()
-    val onPlayerScreen = backStack?.destination?.route == "player"
+    val route = backStack?.destination?.route
+    val fullScreen = route == "player"
+    var addToList by remember { mutableStateOf<MediaItem?>(null) }
 
     val play: (List<MediaItem>, Int) -> Unit = { items, index ->
         val item = items[index]
@@ -140,20 +150,43 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                 playback.playVideo(item)
                 nav.navigate("player")
             } else {
-                // Queue the music around the tapped track and keep browsing; the mini player appears.
+                // Queue the music around the tapped track; the mini player and Now playing take over.
                 val audio = items.filter { it.kind == MediaKind.AUDIO }
                 playback.playQueue(audio, audio.indexOf(item).coerceAtLeast(0))
+                nav.navigate("nowplaying")
             }
         }
     }
 
+    val playSaved: (List<SavedItem>, Int, Boolean) -> Unit = { saved, index, shuffle ->
+        scope.launch {
+            Toast.makeText(context, "Loading ${saved.size} items…", Toast.LENGTH_SHORT).show()
+            // Reload each message so file ids are fresh; skip ones that were deleted from Telegram.
+            val loaded = saved.mapIndexedNotNull { i, s ->
+                runCatching { app.repository.loadMessageMedia(s.chatId, s.messageId) }.getOrNull()?.let { i to it }
+            }
+            if (loaded.isEmpty()) {
+                Toast.makeText(context, "These items are no longer available in Telegram.", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val start = loaded.indexOfFirst { it.first >= index }.coerceAtLeast(0)
+            val items = loaded.map { it.second }
+            playback.playQueue(items, start, shuffle)
+            nav.navigate(if (items[start].kind == MediaKind.VIDEO) "player" else "nowplaying")
+        }
+    }
+
+    val openPlayer = { nav.navigate(if (nowPlaying.isVideo) "player" else "nowplaying") }
+
     Column(Modifier.fillMaxSize()) {
-        Box(Modifier.weight(1f).let { if (onPlayerScreen) it else it.safeDrawingPadding() }) {
+        Box(Modifier.weight(1f).let { if (fullScreen) it else it.safeDrawingPadding() }) {
             NavHost(navController = nav, startDestination = "home") {
                 composable("home") {
                     HomeScreen(
                         onOpenChat = { nav.navigate("chat/$it") },
+                        onOpenList = { nav.navigate("list/$it") },
                         onPlay = play,
+                        onAddToList = { addToList = it },
                         onLogOut = { scope.launch { player?.stop(); app.td.logOut() } },
                     )
                 }
@@ -162,16 +195,38 @@ private fun MainNav(app: TelestreamApp, playback: Playback) {
                         chatId = entry.arguments?.getLong("chatId") ?: 0L,
                         onBack = { nav.popBackStack() },
                         onPlay = play,
+                        onAddToList = { addToList = it },
+                    )
+                }
+                composable("list/{listId}") { entry ->
+                    ListScreen(
+                        listId = entry.arguments?.getString("listId").orEmpty(),
+                        onBack = { nav.popBackStack() },
+                        onPlay = playSaved,
                     )
                 }
                 composable("player") {
                     PlayerScreen(player, onClose = { nav.popBackStack() })
                 }
+                composable("nowplaying") {
+                    NowPlayingScreen(player, nowPlaying, onClose = { nav.popBackStack() })
+                }
             }
         }
         val p = player
-        if (p != null && nowPlaying.hasMedia && !nowPlaying.isVideo && !onPlayerScreen) {
-            MiniPlayer(p, nowPlaying, onOpen = { nav.navigate("player") })
+        if (p != null && nowPlaying.hasMedia && !nowPlaying.isVideo && route != "player" && route != "nowplaying") {
+            MiniPlayer(p, nowPlaying, onOpen = openPlayer)
         }
+    }
+
+    addToList?.let { item ->
+        AddToListDialog(
+            item = item,
+            onDismiss = { addToList = null },
+            onAdded = { name ->
+                addToList = null
+                Toast.makeText(context, "Added to $name", Toast.LENGTH_SHORT).show()
+            },
+        )
     }
 }

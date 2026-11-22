@@ -17,8 +17,14 @@ part you are watching. There is no server.
 - **Player:** Media3 ExoPlayer streaming through TDLib byte ranges, so seeking in a 2 GB file only
   downloads from the new position. Subtitle and audio-track selection, FFmpeg audio decoders for
   AC3/E-AC3/DTS, resume where you stopped.
+- **Join:** a Join button on public channels and groups you have not joined, and private groups by
+  pasting an invite link (`t.me/+...`) into Search, then Find channels.
+- **Hide chats:** My chats, then "Hide chats", hides groups you don't want to see; "Show hidden" brings them back.
+- **My lists:** add any video or song to your own lists with the list button next to it, then play,
+  shuffle, reorder or remove items under the My lists tab.
 - **Music:** plays as a queue in a background service with notification and lock-screen controls,
-  plus a mini player inside the app.
+  plus a mini player (previous, play/pause, next) and a Now playing screen with progress,
+  shuffle, repeat and the queue.
 
 ## Getting an APK
 

@@ -29,10 +29,13 @@ class Playback(context: Context, private val settings: Settings) {
         c.play()
     }
 
-    /** Plays a list of audio files as a queue, starting at [index]. */
-    suspend fun playQueue(items: List<MediaItem>, index: Int) {
+    /** Plays items as a queue, starting at [index]. A video resumes where it was left. */
+    suspend fun playQueue(items: List<MediaItem>, index: Int, shuffle: Boolean = false) {
         val c = controller()
-        c.setMediaItems(items.map { it.toMedia3() }, index, 0L)
+        val first = items.getOrNull(index)
+        val startAt = if (first?.kind == MediaKind.VIDEO) settings.resumePosition(first.id) else 0L
+        c.shuffleModeEnabled = shuffle
+        c.setMediaItems(items.map { it.toMedia3() }, index, startAt)
         c.prepare()
         c.play()
     }

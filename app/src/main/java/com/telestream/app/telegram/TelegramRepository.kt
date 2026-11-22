@@ -30,8 +30,51 @@ class TelegramRepository(private val td: TdClient) {
 
     suspend fun chat(id: Long): ChatSummary = summary(td.chats[id] ?: td.send(TdApi.GetChat(id)))
 
-    suspend fun joinChat(id: Long) {
-        td.send(TdApi.JoinChat(id))
+    /** Joins a public chat. Returns false when the chat needs admin approval (request sent). */
+    suspend fun joinChat(id: Long): Boolean = td.send(TdApi.JoinChat(id)) is TdApi.ChatJoinResultSuccess
+
+    /** True if the user is in this chat (so it shows in My chats). */
+    suspend fun isMember(chatId: Long): Boolean {
+        val chat = td.chats[chatId] ?: td.send(TdApi.GetChat(chatId))
+        return when (val type = chat.type) {
+            is TdApi.ChatTypeSupergroup -> when (val status = td.send(TdApi.GetSupergroup(type.supergroupId)).status) {
+                is TdApi.ChatMemberStatusCreator -> status.isMember
+                is TdApi.ChatMemberStatusAdministrator, is TdApi.ChatMemberStatusMember -> true
+                is TdApi.ChatMemberStatusRestricted -> status.isMember
+                else -> false
+            }
+            else -> chat.positions.isNotEmpty()
+        }
+    }
+
+    /** Preview of a private invite link (t.me/+..., t.me/joinchat/...). */
+    suspend fun checkInviteLink(link: String): InvitePreview {
+        val info = td.send(TdApi.CheckChatInviteLink(link))
+        return InvitePreview(
+            link = link,
+            chatId = info.chatId,
+            title = info.title,
+            memberCount = info.memberCount,
+            description = info.description,
+            photoFileId = info.photo?.small?.id,
+            minithumbnail = info.photo?.minithumbnail?.data,
+            needsApproval = info.createsJoinRequest,
+        )
+    }
+
+    /** Joins by invite link and returns the chat id (0 if the join needs admin approval first). */
+    suspend fun joinByInviteLink(link: String): Long {
+        return when (val result = td.send(TdApi.JoinChatByInviteLink(link))) {
+            is TdApi.ChatJoinResultSuccess -> result.chatId
+            else -> 0L
+        }
+    }
+
+    /** Loads a saved list item again so it gets a fresh file id. */
+    suspend fun loadMessageMedia(chatId: Long, messageId: Long): MediaItem? {
+        val message = td.send(TdApi.GetMessage(chatId, messageId))
+        val title = runCatching { chat(chatId).title }.getOrDefault("")
+        return MediaItem.from(message, title)
     }
 
     /** Media in one chat, newest first. [from] is the message id to continue from (0 = newest). */

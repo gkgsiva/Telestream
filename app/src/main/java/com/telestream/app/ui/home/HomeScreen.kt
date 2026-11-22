@@ -9,6 +9,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import com.telestream.app.telegram.InvitePreview
+import com.telestream.app.ui.common.TdImage
+import com.telestream.app.ui.lists.ListsTab
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -54,7 +66,9 @@ import com.telestream.app.ui.common.SmallLoading
 @Composable
 fun HomeScreen(
     onOpenChat: (Long) -> Unit,
+    onOpenList: (String) -> Unit,
     onPlay: (List<MediaItem>, Int) -> Unit,
+    onAddToList: (MediaItem) -> Unit,
     onLogOut: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -71,10 +85,12 @@ fun HomeScreen(
         TabRow(selectedTabIndex = tab) {
             Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("My chats") })
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Search") })
+            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("My lists") })
         }
         when (tab) {
             0 -> ChatsTab(onOpenChat)
-            else -> SearchTab(onOpenChat, onPlay)
+            1 -> SearchTab(onOpenChat, onPlay, onAddToList)
+            else -> ListsTab(onOpenList)
         }
     }
 }
@@ -82,13 +98,16 @@ fun HomeScreen(
 @Composable
 private fun ChatsTab(onOpenChat: (Long) -> Unit) {
     val app = TelestreamApp.instance
-    val vm: ChatsViewModel = viewModel { ChatsViewModel(app.repository) }
+    val vm: ChatsViewModel = viewModel { ChatsViewModel(app.repository, app.settings) }
+    val hidden by vm.hidden.collectAsStateWithLifecycle()
     val isTv = LocalIsTv.current
+    val visible = if (vm.showHidden) vm.chats else vm.chats.filter { it.id !in hidden }
+    val hiddenCount = vm.chats.count { it.id in hidden }
     when {
         vm.loading && vm.chats.isEmpty() -> Loading()
         vm.error != null && vm.chats.isEmpty() -> CenteredMessage(vm.error!!, actionLabel = "Retry", onAction = vm::refresh)
         vm.chats.isEmpty() -> CenteredMessage(
-            "You have not joined any channels or groups yet. Use Search to find public channels.",
+            "You have not joined any channels or groups yet. Use Search, then Find channels, to find and join some.",
             actionLabel = "Refresh",
             onAction = vm::refresh,
         )
@@ -99,21 +118,46 @@ private fun ChatsTab(onOpenChat: (Long) -> Unit) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "${vm.chats.size} channels and groups",
+                        if (hiddenCount > 0) "${visible.size} shown, $hiddenCount hidden" else "${vm.chats.size} channels and groups",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.weight(1f))
+                    if (hiddenCount > 0) {
+                        TextButton(onClick = { vm.showHidden = !vm.showHidden }) {
+                            Text(if (vm.showHidden) "Hide hidden" else "Show hidden")
+                        }
+                    }
+                    TextButton(onClick = { vm.managing = !vm.managing }) { Text(if (vm.managing) "Done" else "Hide chats") }
                     IconButton(onClick = vm::refresh) { Icon(Icons.Default.Refresh, contentDescription = "Refresh") }
                 }
             }
-            items(vm.chats, key = { it.id }) { chat -> ChatRow(chat, onClick = { onOpenChat(chat.id) }) }
+            items(visible, key = { it.id }) { chat ->
+                val isHidden = chat.id in hidden
+                val rowModifier = Modifier.alpha(if (isHidden) 0.5f else 1f)
+                if (vm.managing || isHidden) {
+                    ChatRow(chat, onClick = { onOpenChat(chat.id) }, modifier = rowModifier) {
+                        IconButton(onClick = { vm.setHidden(chat.id, !isHidden) }) {
+                            Icon(
+                                if (isHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = if (isHidden) "Show this chat" else "Hide this chat",
+                            )
+                        }
+                    }
+                } else {
+                    ChatRow(chat, onClick = { onOpenChat(chat.id) }, modifier = rowModifier)
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun SearchTab(onOpenChat: (Long) -> Unit, onPlay: (List<MediaItem>, Int) -> Unit) {
+private fun SearchTab(
+    onOpenChat: (Long) -> Unit,
+    onPlay: (List<MediaItem>, Int) -> Unit,
+    onAddToList: (MediaItem) -> Unit,
+) {
     val app = TelestreamApp.instance
     val vm: SearchViewModel = viewModel { SearchViewModel(app.repository, app.settings) }
     val recent by vm.recent.collectAsStateWithLifecycle()
@@ -170,13 +214,27 @@ private fun SearchTab(onOpenChat: (Long) -> Unit, onPlay: (List<MediaItem>, Int)
         vm.error?.let { err -> item { Text(err, color = MaterialTheme.colorScheme.error) } }
 
         if (vm.scope == SearchScope.PUBLIC) {
+            if (!vm.searched) {
+                item {
+                    Text(
+                        "Type a name or @username to find public channels and groups, or paste a private invite link (t.me/+...) to join a private group.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            vm.invite?.let { preview ->
+                item {
+                    InviteCard(preview, vm.joinMessage, onJoin = { vm.joinInvite(onOpenChat) }, onOpen = { onOpenChat(preview.chatId) })
+                }
+            }
             items(vm.channels, key = { it.id }) { chat -> ChatRow(chat, onClick = { onOpenChat(chat.id) }) }
-            if (vm.searched && !vm.loading && vm.channels.isEmpty() && vm.error == null) {
+            if (vm.searched && !vm.loading && vm.channels.isEmpty() && vm.invite == null && vm.error == null) {
                 item { Text("No public channels or groups found.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         } else {
             itemsIndexed(vm.results, key = { _, item -> item.id }) { index, item ->
-                MediaRow(item, onClick = { onPlay(vm.results.toList(), index) })
+                MediaRow(item, onClick = { onPlay(vm.results.toList(), index) }, onAddToList = { onAddToList(item) })
             }
             if (vm.searched && !vm.endReached) {
                 item(key = "more-${vm.pagesLoaded}") {
@@ -194,5 +252,35 @@ private fun SearchTab(onOpenChat: (Long) -> Unit, onPlay: (List<MediaItem>, Int)
             }
         }
         if (vm.loading && vm.scope == SearchScope.PUBLIC) item { SmallLoading() }
+    }
+}
+
+@Composable
+private fun InviteCard(preview: InvitePreview, message: String?, onJoin: () -> Unit, onOpen: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TdImage(preview.photoFileId, preview.minithumbnail, Modifier.size(48.dp).clip(CircleShape))
+                Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                    Text(preview.title, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "${preview.memberCount} members" + if (preview.needsApproval) " · admin approval needed" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (preview.chatId != 0L) {
+                    OutlinedButton(onClick = onOpen) { Text("Open") }
+                } else {
+                    Button(onClick = onJoin) { Text(if (preview.needsApproval) "Request to join" else "Join") }
+                }
+            }
+            if (preview.description.isNotBlank()) {
+                Text(preview.description, style = MaterialTheme.typography.bodySmall, maxLines = 3, modifier = Modifier.padding(top = 8.dp))
+            }
+            if (message != null) {
+                Text(message, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
+            }
+        }
     }
 }

@@ -30,6 +30,14 @@ class ChatViewModel(private val repo: TelegramRepository, val chatId: Long) : Vi
     var pagesLoaded by mutableIntStateOf(0)
         private set
 
+    /** null = not known yet. */
+    var isMember by mutableStateOf<Boolean?>(null)
+        private set
+    var joinMessage by mutableStateOf<String?>(null)
+        private set
+    var joining by mutableStateOf(false)
+        private set
+
     private var next: Long? = 0L
     private var job: Job? = null
     private var generation = 0
@@ -37,7 +45,10 @@ class ChatViewModel(private val repo: TelegramRepository, val chatId: Long) : Vi
     val endReached: Boolean get() = next == null
 
     init {
-        viewModelScope.launch { chat = runCatching { repo.chat(chatId) }.getOrNull() }
+        viewModelScope.launch {
+            chat = runCatching { repo.chat(chatId) }.getOrNull()
+            isMember = runCatching { repo.isMember(chatId) }.getOrNull()
+        }
         reload()
     }
 
@@ -48,6 +59,27 @@ class ChatViewModel(private val repo: TelegramRepository, val chatId: Long) : Vi
     }
 
     fun search() = reload()
+
+    fun join() {
+        if (joining) return
+        joining = true
+        viewModelScope.launch {
+            try {
+                if (repo.joinChat(chatId)) {
+                    isMember = true
+                    joinMessage = "Joined. It now shows in My chats."
+                } else {
+                    joinMessage = "Join request sent. An admin has to approve it."
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                joinMessage = e.message ?: "Could not join"
+            } finally {
+                joining = false
+            }
+        }
+    }
 
     fun reload() {
         job?.cancel()

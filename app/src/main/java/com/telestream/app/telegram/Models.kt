@@ -131,3 +131,21 @@ data class MediaItem(
 
 /** One page of results plus how to ask for the next one (null = no more). */
 data class Page<C>(val items: List<MediaItem>, val next: C?)
+
+data class InvitePreview(
+    val link: String,
+    val chatId: Long,
+    val title: String,
+    val memberCount: Int,
+    val description: String,
+    val photoFileId: Int?,
+    val minithumbnail: ByteArray?,
+    val needsApproval: Boolean,
+)
+
+/** True for private invite links such as t.me/+AbC or t.me/joinchat/AbC. */
+fun isInviteLink(text: String): Boolean {
+    val t = text.trim()
+    return Regex("""(?i)(https?://)?(t\.me|telegram\.me|telegram\.dog)/(\+|joinchat/)[\w-]+""").matches(t) ||
+        t.startsWith("tg://join?invite=")
+}

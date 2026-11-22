@@ -17,7 +17,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -95,7 +99,12 @@ fun TdImage(
 }
 
 @Composable
-fun MediaRow(item: MediaItem, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun MediaRow(
+    item: MediaItem,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onAddToList: (() -> Unit)? = null,
+) {
     val isTv = LocalIsTv.current
     FocusCard(onClick = onClick, modifier = modifier.fillMaxWidth()) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -143,16 +152,26 @@ fun MediaRow(item: MediaItem, onClick: () -> Unit, modifier: Modifier = Modifier
                     )
                 }
             }
+            if (onAddToList != null) {
+                IconButton(onClick = onAddToList) {
+                    Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = "Add to a list")
+                }
+            }
         }
     }
 }
 
 @Composable
-fun ChatRow(chat: ChatSummary, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun ChatRow(
+    chat: ChatSummary,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    trailing: (@Composable () -> Unit)? = null,
+) {
     FocusCard(onClick = onClick, modifier = modifier.fillMaxWidth()) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
             TdImage(chat.photoFileId, chat.minithumbnail, Modifier.size(48.dp).clip(CircleShape))
-            Column(Modifier.padding(start = 12.dp)) {
+            Column(Modifier.padding(start = 12.dp).weight(1f)) {
                 Text(chat.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     when (chat.kind) {
@@ -164,6 +183,7 @@ fun ChatRow(chat: ChatSummary, onClick: () -> Unit, modifier: Modifier = Modifie
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            trailing?.invoke()
         }
     }
 }

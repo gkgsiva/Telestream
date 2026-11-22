@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,7 +44,12 @@ import com.telestream.app.ui.common.SmallLoading
 import com.telestream.app.ui.common.TdImage
 
 @Composable
-fun ChatScreen(chatId: Long, onBack: () -> Unit, onPlay: (List<MediaItem>, Int) -> Unit) {
+fun ChatScreen(
+    chatId: Long,
+    onBack: () -> Unit,
+    onPlay: (List<MediaItem>, Int) -> Unit,
+    onAddToList: (MediaItem) -> Unit,
+) {
     val app = TelestreamApp.instance
     val vm: ChatViewModel = viewModel(key = "chat-$chatId") { ChatViewModel(app.repository, chatId) }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -61,9 +67,15 @@ fun ChatScreen(chatId: Long, onBack: () -> Unit, onPlay: (List<MediaItem>, Int) 
                     style = MaterialTheme.typography.titleLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 12.dp),
+                    modifier = Modifier.padding(start = 12.dp).weight(1f),
                 )
+                if (vm.isMember == false) {
+                    Button(onClick = vm::join, enabled = !vm.joining, modifier = Modifier.padding(start = 8.dp)) { Text("Join") }
+                }
             }
+        }
+        vm.joinMessage?.let { msg ->
+            Text(msg, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(horizontal = side, vertical = 4.dp))
         }
         TabRow(selectedTabIndex = vm.filter.ordinal) {
             MediaFilter.entries.forEach { f ->
@@ -93,7 +105,7 @@ fun ChatScreen(chatId: Long, onBack: () -> Unit, onPlay: (List<MediaItem>, Int) 
             }
             vm.error?.let { err -> item { Text(err, color = MaterialTheme.colorScheme.error) } }
             itemsIndexed(vm.items, key = { _, item -> item.id }) { index, item ->
-                MediaRow(item, onClick = { onPlay(vm.items.toList(), index) })
+                MediaRow(item, onClick = { onPlay(vm.items.toList(), index) }, onAddToList = { onAddToList(item) })
             }
             if (!vm.endReached) {
                 item(key = "more-${vm.pagesLoaded}") {

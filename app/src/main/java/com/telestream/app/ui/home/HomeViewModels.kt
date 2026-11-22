@@ -9,6 +9,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.telestream.app.data.Settings
 import com.telestream.app.telegram.ChatSummary
+import com.telestream.app.telegram.InvitePreview
+import com.telestream.app.telegram.isInviteLink
 import com.telestream.app.telegram.MediaFilter
 import com.telestream.app.telegram.MediaItem
 import com.telestream.app.telegram.TelegramRepository
@@ -19,9 +21,20 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 
-class ChatsViewModel(private val repo: TelegramRepository) : ViewModel() {
+class ChatsViewModel(private val repo: TelegramRepository, private val settings: Settings) : ViewModel() {
     var chats by mutableStateOf<List<ChatSummary>>(emptyList())
         private set
+
+    val hidden: StateFlow<Set<Long>> =
+        settings.hiddenChats.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /** When on, every chat shows a Hide or Show button. */
+    var managing by mutableStateOf(false)
+    var showHidden by mutableStateOf(false)
+
+    fun setHidden(chatId: Long, hide: Boolean) {
+        viewModelScope.launch { settings.setChatHidden(chatId, hide) }
+    }
     var loading by mutableStateOf(false)
         private set
     var error by mutableStateOf<String?>(null)
@@ -71,6 +84,12 @@ class SearchViewModel(private val repo: TelegramRepository, private val settings
     var searched by mutableStateOf(false)
         private set
 
+    /** Preview of a private invite link typed into "Find channels". */
+    var invite by mutableStateOf<InvitePreview?>(null)
+        private set
+    var joinMessage by mutableStateOf<String?>(null)
+        private set
+
     /** Bumped after each page so the list can ask for the next one even if a page was empty. */
     var pagesLoaded by mutableIntStateOf(0)
         private set
@@ -106,10 +125,17 @@ class SearchViewModel(private val repo: TelegramRepository, private val settings
         next = ""
         loading = false
         viewModelScope.launch { settings.addRecentSearch(text) }
+        invite = null
+        joinMessage = null
         if (scope == SearchScope.PUBLIC) {
             loading = true
             job = viewModelScope.launch {
                 try {
+                    if (isInviteLink(text)) {
+                        invite = repo.checkInviteLink(text.trim())
+                        next = null
+                        return@launch
+                    }
                     channels = repo.searchPublicChats(text)
                     next = null
                 } catch (e: CancellationException) {
@@ -122,6 +148,21 @@ class SearchViewModel(private val repo: TelegramRepository, private val settings
             }
         } else {
             loadMore()
+        }
+    }
+
+    /** Joins the previewed invite link; calls [onJoined] with the chat id when it worked. */
+    fun joinInvite(onJoined: (Long) -> Unit) {
+        val preview = invite ?: return
+        viewModelScope.launch {
+            try {
+                val chatId = repo.joinByInviteLink(preview.link)
+                if (chatId != 0L) onJoined(chatId) else joinMessage = "Join request sent. An admin has to approve it."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                joinMessage = e.message ?: "Could not join"
+            }
         }
     }
 
